@@ -9,7 +9,10 @@ import { CoinAnalyzer } from '@/components/analyzer/CoinAnalyzer';
 import { BacktestDashboard } from '@/components/backtester/BacktestDashboard';
 import { SignalHistory } from '@/components/history/SignalHistory';
 import { SettingsModal } from '@/components/settings/SettingsModal';
-import { AlertCircle, ShieldCheck } from 'lucide-react';
+import { AlertCircle, ShieldCheck, BellRing, X } from 'lucide-react';
+import { faLabel, FA_CLASSIFICATION } from '@/lib/i18n';
+
+const SCAN_INTERVAL_SECONDS = 60;
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'scanner' | 'analyzer' | 'backtest' | 'history'>('scanner');
@@ -22,88 +25,46 @@ export default function Home() {
   const [isLoadingSignals, setIsLoadingSignals] = useState(true);
   const [isLoadingCoin, setIsLoadingCoin] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string>('--:--:--');
-  const [secondsUntilNextScan, setSecondsUntilNextScan] = useState<number>(60);
+  const [secondsUntilNextScan, setSecondsUntilNextScan] = useState<number>(SCAN_INTERVAL_SECONDS);
   const [favorites, setFavorites] = useState<string[]>(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
   const [weights, setWeights] = useState<SignalWeights>(DEFAULT_WEIGHTS);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [dataSource, setDataSource] = useState<'live' | 'simulated'>('live');
+  const [toast, setToast] = useState<string | null>(null);
 
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isScanningRef = useRef(false);
 
-  // Load favorites and weights from localStorage
+  // بارگذاری علاقه‌مندی‌ها و وزن‌ها از حافظه محلی
   useEffect(() => {
     try {
       const storedFavs = localStorage.getItem('crypto_scanner_favorites');
+      // آب‌سازی اولیه از حافظه محلی — فقط یک‌بار هنگام مانت اجرا می‌شود
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (storedFavs) setFavorites(JSON.parse(storedFavs));
 
       const storedWeights = localStorage.getItem('crypto_scanner_weights');
-      if (storedWeights) setWeights(JSON.parse(storedWeights));
-    } catch {
-      // Ignore storage errors
-    }
-  }, []);
-
-  // Fetch Scanner Signals
-  const fetchScannerSignals = useCallback(async () => {
-    setIsLoadingSignals(true);
-    setErrorMessage(null);
-    try {
-      const res = await fetch(`/api/scanner?tier=${tier}&tf=${currentTimeframe}`);
-      if (!res.ok) throw new Error(`Scanner error: HTTP ${res.status}`);
-      const data = await res.json();
-
-      if (data.signals) {
-        setSignals(data.signals);
-        const dateObj = new Date(data.timestamp || Date.now());
-        setLastUpdated(dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-
-        // Check for Very Strong signals to notify
-        const veryStrong = data.signals.filter((s: Signal) => s.classification === 'VERY_STRONG');
-        if (veryStrong.length > 0 && soundEnabled) {
-          playAlertSound();
-        }
-
-        // Save snapshot to localStorage
-        try {
-          const stored = localStorage.getItem('crypto_signal_scanner_history');
-          const historyList = stored ? JSON.parse(stored) : [];
-          veryStrong.forEach((sig: Signal) => {
-            historyList.unshift({
-              id: `${sig.symbol}_${Date.now()}`,
-              savedAt: Date.now(),
-              signal: sig,
-            });
-          });
-          localStorage.setItem('crypto_signal_scanner_history', JSON.stringify(historyList.slice(0, 50)));
-        } catch {
-          // Ignore
-        }
+      if (storedWeights) {
+        const parsed = JSON.parse(storedWeights) as Partial<SignalWeights>;
+         
+        setWeights({ ...DEFAULT_WEIGHTS, ...parsed });
       }
-    } catch (err: unknown) {
-      setErrorMessage(err instanceof Error ? err.message : 'Failed to scan market');
-    } finally {
-      setIsLoadingSignals(false);
-      setSecondsUntilNextScan(60);
-    }
-  }, [tier, currentTimeframe, soundEnabled]);
-
-  // Fetch Deep Coin Analysis
-  const fetchCoinAnalysis = useCallback(async (symbol: string, tf: Timeframe) => {
-    setIsLoadingCoin(true);
-    try {
-      const res = await fetch(`/api/analyze?symbol=${symbol}&tf=${tf}`);
-      if (!res.ok) throw new Error(`Coin analysis error: HTTP ${res.status}`);
-      const data = (await res.json()) as FullAnalysisResult;
-      setCoinAnalysis(data);
-    } catch (err: unknown) {
-      console.error(err);
-    } finally {
-      setIsLoadingCoin(false);
+    } catch {
+      // خطاهای دسترسی به حافظه محلی نادیده گرفته می‌شوند
     }
   }, []);
 
-  // Play alert sound for high probability triggers
+  // نمایش توست با پنهان‌سازی خودکار
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 6000);
+  }, []);
+
+  // پخش صدای هشدار برای سیگنال‌های با احتمال بالا
   const playAlertSound = () => {
     try {
       const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
@@ -119,31 +80,122 @@ export default function Home() {
       osc.start();
       osc.stop(ctx.currentTime + 0.3);
     } catch {
-      // Audio not permitted without interaction
+      // پخش صدا بدون تعامل کاربری مجاز نیست
     }
   };
 
-  // Initial scan & 60s countdown timer
-  useEffect(() => {
-    fetchScannerSignals();
+  // دریافت سیگنال‌های اسکنر — وزن‌های سفارشی کاربر هم به موتور ارسال می‌شوند
+  const fetchScannerSignals = useCallback(async () => {
+    if (isScanningRef.current) return; // جلوگیری از اسکن هم‌زمان تکراری
+    isScanningRef.current = true;
+    setIsLoadingSignals(true);
+    setErrorMessage(null);
+    try {
+      const weightsParam = encodeURIComponent(JSON.stringify(weights));
+      const res = await fetch(`/api/scanner?tier=${tier}&tf=${currentTimeframe}&weights=${weightsParam}`);
+      if (!res.ok) throw new Error(`خطای اسکنر بازار: وضعیت HTTP ${res.status}`);
+      const data = await res.json();
 
-    timerRef.current = setInterval(() => {
-      setSecondsUntilNextScan((prev) => {
-        if (prev <= 1) {
-          fetchScannerSignals();
-          return 60;
+      if (data.dataSource === 'simulated') {
+        setDataSource('simulated');
+      }
+
+      if (data.signals) {
+        setSignals(data.signals);
+        const dateObj = new Date(data.timestamp || Date.now());
+        setLastUpdated(
+          dateObj.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        );
+
+        // اطلاع‌رسانی سیگنال‌های خیلی قوی
+        const veryStrong = data.signals.filter((s: Signal) => s.classification === 'VERY_STRONG');
+        if (veryStrong.length > 0) {
+          showToast(
+            `🔔 ${veryStrong.length} سیگنال ${faLabel(FA_CLASSIFICATION, 'VERY_STRONG')} شناسایی شد: ${veryStrong
+              .map((s: Signal) => s.symbol)
+              .slice(0, 3)
+              .join('، ')}`
+          );
+          if (soundEnabled) playAlertSound();
         }
-        return prev - 1;
-      });
+
+        // ذخیره تصویر لحظه‌ای در حافظه محلی مرورگر
+        try {
+          const stored = localStorage.getItem('crypto_signal_scanner_history');
+          const historyList = stored ? JSON.parse(stored) : [];
+          veryStrong.forEach((sig: Signal) => {
+            historyList.unshift({
+              id: `${sig.symbol}_${Date.now()}`,
+              savedAt: Date.now(),
+              signal: sig,
+            });
+          });
+          localStorage.setItem('crypto_signal_scanner_history', JSON.stringify(historyList.slice(0, 50)));
+        } catch {
+          // نادیده گرفته می‌شود
+        }
+      }
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : 'اسکن بازار با خطا مواجه شد');
+    } finally {
+      setIsLoadingSignals(false);
+      isScanningRef.current = false;
+      setSecondsUntilNextScan(SCAN_INTERVAL_SECONDS);
+    }
+  }, [tier, currentTimeframe, soundEnabled, weights, showToast]);
+
+  // دریافت تحلیل عمیق یک کوین — با اعمال وزن‌های سفارشی کاربر
+  const fetchCoinAnalysis = useCallback(
+    async (symbol: string, tf: Timeframe) => {
+      setIsLoadingCoin(true);
+      try {
+        const weightsParam = encodeURIComponent(JSON.stringify(weights));
+        const res = await fetch(`/api/analyze?symbol=${symbol}&tf=${tf}&weights=${weightsParam}`);
+        if (!res.ok) throw new Error(`خطای تحلیل کوین: وضعیت HTTP ${res.status}`);
+        const data = (await res.json()) as FullAnalysisResult;
+        setCoinAnalysis(data);
+      } catch (err: unknown) {
+        console.error(err);
+      } finally {
+        setIsLoadingCoin(false);
+      }
+    },
+    [weights]
+  );
+
+  // اسکن اولیه + شمارش معکوس؛ منطق اسکن از به‌روزرسانی حالت جدا شده تا در
+  // حالت StrictMode درخواست تکراری ارسال نشود
+  useEffect(() => {
+    // واکشی داده از منبع خارجی هنگام مانت — الگوی استاندارد
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchScannerSignals();
+  }, [fetchScannerSignals]);
+
+  useEffect(() => {
+    timerRef.current = setInterval(() => {
+      // به‌روزرسانی شمارنده داخل کال‌بک تایمر انجام می‌شود (نه همگام با بدنه افکت)
+       
+      setSecondsUntilNextScan((prev) => (prev <= 1 ? SCAN_INTERVAL_SECONDS : prev - 1));
     }, 1000);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [fetchScannerSignals]);
+  }, []);
 
-  // Trigger coin analysis when selected symbol or timeframe changes
+  // وقتی شمارنده از ۱ به مقدار اولیه بازمی‌گردد، اسکن جدید اجرا می‌شود
+  const previousCountRef = useRef(SCAN_INTERVAL_SECONDS);
   useEffect(() => {
+    if (previousCountRef.current === 1 && secondsUntilNextScan === SCAN_INTERVAL_SECONDS) {
+       
+      fetchScannerSignals();
+    }
+    previousCountRef.current = secondsUntilNextScan;
+  }, [secondsUntilNextScan, fetchScannerSignals]);
+
+  // شروع تحلیل کوین با تغییر نماد یا تایم‌فریم
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchCoinAnalysis(selectedSymbol, currentTimeframe);
   }, [selectedSymbol, currentTimeframe, fetchCoinAnalysis]);
 
@@ -163,12 +215,13 @@ export default function Home() {
   const handleSaveWeights = (newWeights: SignalWeights) => {
     setWeights(newWeights);
     localStorage.setItem('crypto_scanner_weights', JSON.stringify(newWeights));
-    fetchScannerSignals();
+    // وزن‌های جدید بلافاصله در اسکن بعدی و تحلیل کوین اعمال می‌شوند
+    setSecondsUntilNextScan(SCAN_INTERVAL_SECONDS);
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500 selection:text-white">
-      {/* Top Application Header */}
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+      {/* سربرگ اصلی برنامه */}
       <Header
         activeTab={activeTab}
         onChangeTab={setActiveTab}
@@ -179,9 +232,10 @@ export default function Home() {
         onOpenSettings={() => setIsSettingsOpen(true)}
         soundEnabled={soundEnabled}
         onToggleSound={() => setSoundEnabled((prev) => !prev)}
+        dataSource={dataSource}
       />
 
-      {/* Main Page Content */}
+      {/* محتوای اصلی صفحه */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6">
         {errorMessage && (
           <div className="mb-6 p-4 bg-rose-950/60 border border-rose-800 rounded-xl text-xs text-rose-300 flex items-center justify-between gap-3">
@@ -191,14 +245,14 @@ export default function Home() {
             </div>
             <button
               onClick={fetchScannerSignals}
-              className="px-3 py-1 bg-rose-900/60 hover:bg-rose-800 text-rose-200 rounded font-semibold text-[11px]"
+              className="px-3 py-1 bg-rose-900/60 hover:bg-rose-800 text-rose-200 rounded font-semibold text-[11px] shrink-0"
             >
-              Retry
+              تلاش مجدد
             </button>
           </div>
         )}
 
-        {/* Tab 1: Live Market Scanner Table */}
+        {/* تب ۱: جدول زنده اسکنر بازار */}
         {activeTab === 'scanner' && (
           <ScannerTable
             signals={signals}
@@ -214,7 +268,7 @@ export default function Home() {
           />
         )}
 
-        {/* Tab 2: Deep Single Asset Analyzer */}
+        {/* تب ۲: تحلیل عمیق یک دارایی */}
         {activeTab === 'analyzer' && (
           <>
             {coinAnalysis ? (
@@ -227,13 +281,15 @@ export default function Home() {
             ) : (
               <div className="flex flex-col items-center justify-center p-24 text-slate-400 gap-3">
                 <div className="w-8 h-8 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
-                <span>Loading deep multi-timeframe analysis for {selectedSymbol}...</span>
+                <span>
+                  در حال بارگذاری تحلیل عمیق چندتایم‌فریم برای <span className="font-bold num">{selectedSymbol}</span>...
+                </span>
               </div>
             )}
           </>
         )}
 
-        {/* Tab 3: Strategy Backtester & Walk-Forward Visualizer */}
+        {/* تب ۳: بک‌تست استراتژی و اعتبارسنجی پیش‌رو */}
         {activeTab === 'backtest' && (
           <BacktestDashboard
             initialSymbol={selectedSymbol}
@@ -241,7 +297,7 @@ export default function Home() {
           />
         )}
 
-        {/* Tab 4: Local History & Watchlist */}
+        {/* تب ۴: دیده‌بان و تاریخچه محلی */}
         {activeTab === 'history' && (
           <SignalHistory
             onSelectSymbol={handleSelectSymbol}
@@ -251,21 +307,38 @@ export default function Home() {
         )}
       </main>
 
-      {/* Global Disclaimer Footer */}
+      {/* توست اطلاع‌رسانی سیگنال خیلی قوی */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 animate-toast-in">
+          <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-slate-900 border border-cyan-500/60 shadow-[0_0_25px_rgba(6,182,212,0.25)] backdrop-blur-md max-w-sm">
+            <BellRing className="w-5 h-5 text-cyan-400 shrink-0" />
+            <span className="text-xs text-slate-200 leading-relaxed">{toast}</span>
+            <button
+              onClick={() => setToast(null)}
+              className="text-slate-500 hover:text-slate-300 transition-colors shrink-0"
+              title="بستن"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* پاصفحه سلب مسئولیت */}
       <footer className="mt-auto border-t border-slate-900 bg-slate-950/90 py-6 px-4 text-center text-xs text-slate-500">
         <div className="max-w-4xl mx-auto flex flex-col gap-2">
           <div className="flex items-center justify-center gap-2 text-slate-400 font-semibold">
             <ShieldCheck className="w-4 h-4 text-cyan-400" />
-            <span>Serverless Quantitative Market Structure & Liquidity Engine</span>
+            <span>موتور بدون سرور تحلیل ساختار بازار و نقدینگی</span>
           </div>
           <p className="text-[11px] leading-relaxed text-slate-600">
-            This platform executes deterministic multi-layer algorithmic analysis across Binance spot & futures feeds.
-            All scores, invalidations, and trade zones represent mathematical confluence models and do not guarantee profits.
+            این سامانه تحلیل الگوریتمی چندلایه خود را روی فیدهای اسپات و آتی بایننس اجرا می‌کند.
+            همه امتیازها، حد ضررها و نواحی معامله، مدل‌های هم‌افزایی ریاضی هستند و تضمینی بر سود نیستند.
           </p>
         </div>
       </footer>
 
-      {/* Engine Tuning & Settings Modal */}
+      {/* مودال تنظیمات موتور */}
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}

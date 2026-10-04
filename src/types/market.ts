@@ -356,9 +356,19 @@ export interface FullAnalysisResult {
   candles: Kline[]; // Current timeframe candles
   dataTimestamp: number;
   analysisTimestamp: number;
+  /** زنده بودن داده‌ها: اگر پروایدر به داده شبیه‌سازی‌شده پناه برده باشد 'simulated' است */
+  dataSource?: 'live' | 'simulated';
 }
 
 // Backtesting interfaces
+export type FailureCategory =
+  | 'LIQUIDITY_FAIL' // شکست سطح نقدینگی و عبور از حد ساختاری
+  | 'FALSE_BREAKOUT' // شکست جعلی و تله ادامه حرکت
+  | 'WEAK_DISPLACEMENT' // دیسپلیسمنت ضعیف و رکود مومنتوم
+  | 'HTF_CONFLICT' // تضاد با روند تایم‌فریم بالا
+  | 'VOLUME_FAIL' // عدم تأیید حجمی
+  | 'FUNDING_SQUEEZE'; // فشار فاندینگ
+
 export interface BacktestTrade {
   id: string;
   symbol: string;
@@ -379,6 +389,8 @@ export interface BacktestTrade {
   score: number;
   reasons: string[];
   failureReason?: string;
+  failureCategory?: FailureCategory;
+  holdCandles?: number; // تعداد کندل‌های باز بودن معامله
 }
 
 export interface BacktestMetrics {

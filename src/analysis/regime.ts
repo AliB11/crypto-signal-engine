@@ -8,7 +8,7 @@ export function detectMarketRegime(klines: Kline[]): MarketRegime {
       atrPercent: 0,
       adx: 20,
       bbWidth: 2.0,
-      description: 'Insufficient candles for market regime detection',
+      description: 'کندل کافی برای تشخیص رژیم بازار وجود ندارد',
     };
   }
 
@@ -51,33 +51,33 @@ export function detectMarketRegime(klines: Kline[]): MarketRegime {
 
   // Determine Regime
   let regime: MarketRegimeType = 'RANGING';
-  let description = 'Consolidating market within tight horizontal range';
+  let description = 'بازار در حال تثبیت داخل یک محدوده افقی فشرده';
 
   if (bbWidth > 4.5 || atrPercent > 2.5) {
     if (priceChange20 > 2.0) {
       regime = 'TRENDING_BULLISH';
-      description = 'Strong bullish trend expansion with high volatility and buyer dominance';
+      description = 'گسترش روند صعودی قوی با نوسان بالا و چیرگی خریداران';
     } else if (priceChange20 < -2.0) {
       regime = 'TRENDING_BEARISH';
-      description = 'Strong bearish trend expansion with high volatility and seller pressure';
+      description = 'گسترش روند نزولی قوی با نوسان بالا و فشار فروشندگان';
     } else {
       regime = 'HIGH_VOLATILITY';
-      description = 'High volatility chop with expanding range and multi-directional wicks';
+      description = 'نوسان شدید و بی‌جهت با دامنه در حال گسترش و شدوهای دوطرفه';
     }
   } else if (bbWidth < 1.2 || atrPercent < 0.6) {
     regime = 'CONTRACTION';
-    description = 'Range contraction / volatility compression before potential explosive breakout';
+    description = 'فشردگی دامنه و نوسان؛ زمینه‌ساز شکست احتمالی انفجاری';
   } else if (adx > 45) {
     if (priceChange20 > 1.2) {
       regime = 'TRENDING_BULLISH';
-      description = 'Consistent upward trend structure with clear higher highs and lows';
+      description = 'ساختار روند صعودی پایدار با سقف‌ها و کف‌های بالاترِ مشخص';
     } else if (priceChange20 < -1.2) {
       regime = 'TRENDING_BEARISH';
-      description = 'Consistent downward trend structure with lower lows and highs';
+      description = 'ساختار روند نزولی پایدار با کف‌ها و سقف‌های پایین‌تر';
     }
   } else if (bbWidth < 2.0) {
     regime = 'LOW_VOLATILITY';
-    description = 'Low volatility consolidation with muted trading activity';
+    description = 'تثبیت کم‌نوسان با فعالیت معاملاتی ضعیف';
   }
 
   return {

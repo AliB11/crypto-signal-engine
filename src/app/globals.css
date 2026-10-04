@@ -1,1 +1,67 @@
 @import "tailwindcss";
+
+/* ===== فونت فارسی وزیرمتن (میزبانی محلی، متغیر ۱۰۰ تا ۹۰۰) ===== */
+@font-face {
+  font-family: 'Vazirmatn';
+  src: url('/fonts/Vazirmatn-wght.woff2') format('woff2 supports variations'),
+    url('/fonts/Vazirmatn-wght.woff2') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme inline {
+  --font-sans: 'Vazirmatn', Tahoma, Arial, sans-serif;
+}
+
+/* ===== اسکرول‌بار تیره هماهنگ با پوسته ===== */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 #0f172a;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 8px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* ===== انیمیشن ورود توست ===== */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-toast-in {
+  animation: toast-in 0.35s cubic-bezier(0.21, 1.02, 0.73, 1) forwards;
+}
+
+/* ===== اعداد و قیمت‌ها در بستر راست‌به‌چپ، جداشده از جهت متن ===== */
+.num {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* انتخاب متن با رنگ برند */
+::selection {
+  background-color: rgba(6, 182, 212, 0.85);
+  color: #fff;
+}

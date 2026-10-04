@@ -1,9 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { dataProvider } from '@/providers';
+import { dataProvider, getDataSource } from '@/providers';
 import { runScanner } from '@/analysis/scanner';
-import { Timeframe } from '@/types/market';
+import { SignalWeights, Timeframe } from '@/types/market';
+import { DEFAULT_WEIGHTS } from '@/analysis/signal';
 
 export const dynamic = 'force-dynamic';
+
+const WEIGHT_KEYS = Object.keys(DEFAULT_WEIGHTS) as (keyof SignalWeights)[];
+
+/** وزن‌های سفارشی از کوئری‌استرینگ را اعتبارسنجی و نرمال می‌کند */
+export function parseWeightsParam(raw: string | null): Partial<SignalWeights> | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const clean: Partial<SignalWeights> = {};
+    for (const key of WEIGHT_KEYS) {
+      const val = Number(parsed[key]);
+      if (isFinite(val) && val >= 0 && val <= 1) {
+        clean[key] = val;
+      }
+    }
+    return Object.keys(clean).length > 0 ? clean : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -11,6 +32,7 @@ export async function GET(request: NextRequest) {
     const tier = searchParams.get('tier') || 'top10';
     const tf = (searchParams.get('tf') || '15m') as Timeframe;
     const customSymbols = searchParams.get('symbols');
+    const weights = parseWeightsParam(searchParams.get('weights'));
 
     let symbolList: string[] = [];
 
@@ -21,7 +43,8 @@ export async function GET(request: NextRequest) {
       symbolList = await dataProvider.getTopSymbols(count);
     }
 
-    const scannerResult = await runScanner(dataProvider, symbolList, tf, 5);
+    const dataSource = getDataSource();
+    const scannerResult = await runScanner(dataProvider, symbolList, tf, 5, weights, dataSource);
 
     return NextResponse.json(scannerResult, {
       headers: {

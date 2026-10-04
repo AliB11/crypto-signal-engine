@@ -188,7 +188,7 @@ app.post('/api/backtest', async (c) => {
 });
 
 // Cloudflare Worker Handler
-export default {
+const workerHandler = {
   fetch: app.fetch,
 
   // Cron trigger scheduled handler (Runs every minute)
@@ -203,3 +203,5 @@ export default {
     }
   },
 };
+
+export default workerHandler;

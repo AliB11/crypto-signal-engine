@@ -4,17 +4,13 @@ import React, { useState } from 'react';
 import { BacktestReport, Timeframe } from '@/types/market';
 import {
   Play,
-  RotateCcw,
   TrendingUp,
   Award,
   AlertTriangle,
-  BarChart2,
   PieChart,
-  Sliders,
-  CheckCircle2,
-  XCircle,
-  HelpCircle,
 } from 'lucide-react';
+import { formatPrice, toFaDigits, formatFaDateTime } from '@/lib/format';
+import { faLabel, FA_DIRECTION, FA_EXIT_REASON } from '@/lib/i18n';
 
 interface Props {
   initialSymbol?: string;
@@ -44,7 +40,7 @@ export const BacktestDashboard: React.FC<Props> = ({
       });
 
       if (!res.ok) {
-        throw new Error(`Backtest failed with status: ${res.status}`);
+        throw new Error(`بک‌تست با خطای سرور (${res.status}) مواجه شد`);
       }
 
       const data = (await res.json()) as BacktestReport;
@@ -56,11 +52,14 @@ export const BacktestDashboard: React.FC<Props> = ({
     }
   };
 
-  // Run backtest initially if not yet loaded
+  // اجرای اولیه بک‌تست هنگام ورود به تب
   React.useEffect(() => {
     if (!report && !isLoading) {
+      // اجرای خودکار بک‌تست در ورود به تب — فقط یک‌بار
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       handleRunBacktest();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const overall = report?.overallMetrics;
@@ -69,18 +68,17 @@ export const BacktestDashboard: React.FC<Props> = ({
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Controls Header */}
+      {/* سربرگ کنترل‌ها */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-4">
-            {/* Symbol Input */}
+            {/* نماد دارایی */}
             <div>
-              <label className="text-[11px] font-semibold text-slate-400 block mb-1">
-                Asset Symbol
-              </label>
+              <label className="text-[11px] font-semibold text-slate-400 block mb-1">نماد دارایی</label>
               <select
                 value={symbol}
                 onChange={(e) => setSymbol(e.target.value)}
+                dir="ltr"
                 className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs font-bold text-slate-100 focus:outline-none focus:border-cyan-500"
               >
                 <option value="BTCUSDT">BTCUSDT</option>
@@ -95,17 +93,15 @@ export const BacktestDashboard: React.FC<Props> = ({
               </select>
             </div>
 
-            {/* Timeframe Selector */}
+            {/* تایم‌فریم */}
             <div>
-              <label className="text-[11px] font-semibold text-slate-400 block mb-1">
-                Timeframe
-              </label>
+              <label className="text-[11px] font-semibold text-slate-400 block mb-1">تایم‌فریم</label>
               <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
                 {(['5m', '15m', '1h', '4h'] as const).map((tf) => (
                   <button
                     key={tf}
                     onClick={() => setTimeframe(tf)}
-                    className={`px-2.5 py-1 rounded font-semibold uppercase ${
+                    className={`px-2.5 py-1 rounded font-semibold num ${
                       timeframe === tf ? 'bg-cyan-600 text-white shadow' : 'text-slate-400'
                     }`}
                   >
@@ -115,13 +111,11 @@ export const BacktestDashboard: React.FC<Props> = ({
               </div>
             </div>
 
-            {/* Min Signal Score Slider */}
+            {/* حداقل امتیاز سیگنال */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-[11px] font-semibold text-slate-400">
-                  Min Signal Score:
-                </label>
-                <span className="text-xs font-mono font-bold text-cyan-400">{minScore}</span>
+                <label className="text-[11px] font-semibold text-slate-400">حداقل امتیاز سیگنال:</label>
+                <span className="text-xs font-mono font-bold text-cyan-400 num">{minScore}</span>
               </div>
               <input
                 type="range"
@@ -134,24 +128,22 @@ export const BacktestDashboard: React.FC<Props> = ({
               />
             </div>
 
-            {/* Historical Candles */}
+            {/* عمق کندل‌ها */}
             <div>
-              <label className="text-[11px] font-semibold text-slate-400 block mb-1">
-                Candle Depth
-              </label>
+              <label className="text-[11px] font-semibold text-slate-400 block mb-1">عمق داده تاریخی</label>
               <select
                 value={candleLimit}
                 onChange={(e) => setCandleLimit(Number(e.target.value))}
                 className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs font-bold text-slate-100 focus:outline-none focus:border-cyan-500"
               >
-                <option value="300">300 Bars</option>
-                <option value="500">500 Bars</option>
-                <option value="1000">1000 Bars</option>
+                <option value="300">{toFaDigits(300)} کندل</option>
+                <option value="500">{toFaDigits(500)} کندل</option>
+                <option value="1000">{toFaDigits(1000)} کندل</option>
               </select>
             </div>
           </div>
 
-          {/* Run Button */}
+          {/* دکمه اجرا */}
           <button
             onClick={handleRunBacktest}
             disabled={isLoading}
@@ -162,7 +154,7 @@ export const BacktestDashboard: React.FC<Props> = ({
             ) : (
               <Play className="w-4 h-4 fill-white" />
             )}
-            <span>{isLoading ? 'Simulating...' : 'Run Quantitative Backtest'}</span>
+            <span>{isLoading ? 'در حال شبیه‌سازی...' : 'اجرای بک‌تست کمّی'}</span>
           </button>
         </div>
       </div>
@@ -176,133 +168,104 @@ export const BacktestDashboard: React.FC<Props> = ({
 
       {overall && (
         <>
-          {/* Performance KPI Cards */}
+          {/* کارت‌های شاخص عملکرد */}
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-            {/* Win Rate */}
             <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl shadow-md text-center">
-              <span className="text-[10px] text-slate-500 uppercase font-semibold block mb-1">
-                Win Rate
-              </span>
+              <span className="text-[10px] text-slate-500 font-semibold block mb-1">نرخ برد</span>
               <span
-                className={`font-mono text-xl font-black block ${
+                className={`font-mono text-xl font-black block num ${
                   overall.winRate >= 50 ? 'text-emerald-400' : 'text-rose-400'
                 }`}
               >
                 {overall.winRate}%
               </span>
-              <span className="text-[10px] text-slate-400 mt-1 block">
-                {overall.winningTrades}W / {overall.losingTrades}L
+              <span className="text-[10px] text-slate-400 mt-1 block num">
+                {overall.winningTrades} برد / {overall.losingTrades} باخت
               </span>
             </div>
 
-            {/* Profit Factor */}
             <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl shadow-md text-center">
-              <span className="text-[10px] text-slate-500 uppercase font-semibold block mb-1">
-                Profit Factor
-              </span>
+              <span className="text-[10px] text-slate-500 font-semibold block mb-1">فاکتور سود</span>
               <span
-                className={`font-mono text-xl font-black block ${
+                className={`font-mono text-xl font-black block num ${
                   overall.profitFactor >= 1.5 ? 'text-emerald-400' : 'text-amber-400'
                 }`}
               >
                 {overall.profitFactor}
               </span>
-              <span className="text-[10px] text-slate-400 mt-1 block">Gross P/L</span>
+              <span className="text-[10px] text-slate-400 mt-1 block">سود/زیان ناخالص</span>
             </div>
 
-            {/* Expectancy */}
             <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl shadow-md text-center">
-              <span className="text-[10px] text-slate-500 uppercase font-semibold block mb-1">
-                Expectancy
-              </span>
+              <span className="text-[10px] text-slate-500 font-semibold block mb-1">امید ریاضی</span>
               <span
-                className={`font-mono text-xl font-black block ${
+                className={`font-mono text-xl font-black block num ${
                   overall.expectancy > 0 ? 'text-emerald-400' : 'text-rose-400'
                 }`}
               >
                 {overall.expectancy > 0 ? '+' : ''}
                 {overall.expectancy}R
               </span>
-              <span className="text-[10px] text-slate-400 mt-1 block">Per Trade</span>
+              <span className="text-[10px] text-slate-400 mt-1 block">به ازای هر معامله</span>
             </div>
 
-            {/* Max Drawdown */}
             <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl shadow-md text-center">
-              <span className="text-[10px] text-slate-500 uppercase font-semibold block mb-1">
-                Max Drawdown
-              </span>
-              <span className="font-mono text-xl font-black text-rose-400 block">
+              <span className="text-[10px] text-slate-500 font-semibold block mb-1">حداکثر افت سرمایه</span>
+              <span className="font-mono text-xl font-black text-rose-400 block num">
                 -{overall.maxDrawdownPercent}%
               </span>
-              <span className="text-[10px] text-slate-400 mt-1 block">Peak-to-Trough</span>
+              <span className="text-[10px] text-slate-400 mt-1 block">از اوج تا کف</span>
             </div>
 
-            {/* Cumulative Return */}
             <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl shadow-md text-center">
-              <span className="text-[10px] text-slate-500 uppercase font-semibold block mb-1">
-                Net Return
-              </span>
+              <span className="text-[10px] text-slate-500 font-semibold block mb-1">بازده خالص</span>
               <span
-                className={`font-mono text-xl font-black block ${
+                className={`font-mono text-xl font-black block num ${
                   overall.cumulativeReturnPercent >= 0 ? 'text-emerald-400' : 'text-rose-400'
                 }`}
               >
                 {overall.cumulativeReturnPercent >= 0 ? '+' : ''}
                 {overall.cumulativeReturnPercent}%
               </span>
-              <span className="text-[10px] text-slate-400 mt-1 block">1% Risk/Trade</span>
+              <span className="text-[10px] text-slate-400 mt-1 block">ریسک ۱٪ در هر معامله</span>
             </div>
 
-            {/* Average RR */}
             <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl shadow-md text-center">
-              <span className="text-[10px] text-slate-500 uppercase font-semibold block mb-1">
-                Avg RR
-              </span>
-              <span className="font-mono text-xl font-black text-cyan-400 block">
-                1 : {overall.avgRR}
-              </span>
-              <span className="text-[10px] text-slate-400 mt-1 block">Realized</span>
+              <span className="text-[10px] text-slate-500 font-semibold block mb-1">میانگین ریوارد</span>
+              <span className="font-mono text-xl font-black text-cyan-400 block num">1:{overall.avgRR}</span>
+              <span className="text-[10px] text-slate-400 mt-1 block">تحقق‌یافته</span>
             </div>
 
-            {/* Sharpe Ratio */}
             <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl shadow-md text-center">
-              <span className="text-[10px] text-slate-500 uppercase font-semibold block mb-1">
-                Sharpe Ratio
-              </span>
-              <span className="font-mono text-xl font-black text-slate-200 block">
-                {overall.sharpeRatio}
-              </span>
-              <span className="text-[10px] text-slate-400 mt-1 block">Risk-Adjusted</span>
+              <span className="text-[10px] text-slate-500 font-semibold block mb-1">نسبت شارپ</span>
+              <span className="font-mono text-xl font-black text-slate-200 block num">{overall.sharpeRatio}</span>
+              <span className="text-[10px] text-slate-400 mt-1 block">تعدیل‌شده با ریسک</span>
             </div>
 
-            {/* Sortino Ratio */}
             <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl shadow-md text-center">
-              <span className="text-[10px] text-slate-500 uppercase font-semibold block mb-1">
-                Sortino Ratio
-              </span>
-              <span className="font-mono text-xl font-black text-slate-200 block">
-                {overall.sortinoRatio}
-              </span>
-              <span className="text-[10px] text-slate-400 mt-1 block">Downside Risk</span>
+              <span className="text-[10px] text-slate-500 font-semibold block mb-1">نسبت سورتینو</span>
+              <span className="font-mono text-xl font-black text-slate-200 block num">{overall.sortinoRatio}</span>
+              <span className="text-[10px] text-slate-400 mt-1 block">ریسک نزولی</span>
             </div>
           </div>
 
-          {/* Equity Curve Visualization */}
+          {/* منحنی سرمایه */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
               <div className="flex items-center gap-2">
                 <TrendingUp className="w-5 h-5 text-cyan-400" />
                 <h3 className="font-bold text-slate-100 text-sm">
-                  Simulated Account Equity Curve (Zero Look-Ahead Bias)
+                  منحنی سرمایه شبیه‌سازی‌شده (بدون سوگیری نگاه به آینده)
                 </h3>
               </div>
               <span className="text-xs text-slate-400">
-                Initial: <strong>$10,000 USD</strong> • Total Trades: <strong>{overall.totalTrades}</strong>
+                سرمایه اولیه: <strong className="num">$10,000</strong> • تعداد معاملات:{' '}
+                <strong className="num">{overall.totalTrades}</strong>
               </span>
             </div>
 
-            {/* Custom SVG Equity Curve Line */}
-            <div className="w-full h-48 relative flex items-end">
+            {/* نمودار خطی منحنی سرمایه */}
+            <div dir="ltr" className="w-full h-48 relative flex items-end">
               {overall.equityCurve.length > 1 ? (
                 <svg className="w-full h-full overflow-visible" viewBox="0 0 1000 200" preserveAspectRatio="none">
                   <defs>
@@ -312,7 +275,6 @@ export const BacktestDashboard: React.FC<Props> = ({
                     </linearGradient>
                   </defs>
 
-                  {/* Draw Polyline */}
                   {(() => {
                     const points = overall.equityCurve;
                     const minEq = Math.min(...points.map((p) => p.equity)) * 0.98;
@@ -338,73 +300,64 @@ export const BacktestDashboard: React.FC<Props> = ({
                 </svg>
               ) : (
                 <div className="w-full flex items-center justify-center text-slate-500 text-xs">
-                  Insufficient trades generated in this window
+                  در این بازه تعداد معاملات کافی تولید نشد
                 </div>
               )}
             </div>
           </div>
 
-          {/* Walk-Forward Validation & False Signal Diagnostics */}
+          {/* اعتبارسنجی پیش‌رو و عیب‌یابی سیگنال‌های کاذب */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Walk-Forward Split (60% Train / 20% Val / 20% OOS) */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl">
               <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
                 <div className="flex items-center gap-2">
                   <Award className="w-5 h-5 text-amber-400" />
-                  <h3 className="font-bold text-slate-100 text-sm">
-                    Walk-Forward Validation (3-Split)
-                  </h3>
+                  <h3 className="font-bold text-slate-100 text-sm">اعتبارسنجی پیش‌رو (سه‌بخشی)</h3>
                 </div>
                 {walkForward?.overfitWarning ? (
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-rose-950 text-rose-400 border border-rose-800">
-                    ⚠ Overfit Warning
+                    ⚠ هشدار بیش‌برازش
                   </span>
                 ) : (
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">
-                    ✓ Validated
+                    ✓ اعتبارسنجی شد
                   </span>
                 )}
               </div>
 
               {walkForward && (
                 <div className="overflow-x-auto text-xs">
-                  <table className="w-full text-left">
+                  <table className="w-full text-right">
                     <thead>
                       <tr className="border-b border-slate-800 text-slate-400 text-[11px]">
-                        <th className="py-2">Split Segment</th>
-                        <th className="py-2">Trades</th>
-                        <th className="py-2">Win Rate</th>
-                        <th className="py-2">Profit Factor</th>
-                        <th className="py-2">Max Drawdown</th>
+                        <th className="py-2">بخش</th>
+                        <th className="py-2">معاملات</th>
+                        <th className="py-2">نرخ برد</th>
+                        <th className="py-2">فاکتور سود</th>
+                        <th className="py-2">حداکثر افت</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60 font-mono">
                       <tr>
-                        <td className="py-2.5 font-sans font-bold text-slate-200">
-                          Training (60%)
-                        </td>
-                        <td className="py-2.5 text-slate-300">{walkForward.training.totalTrades}</td>
-                        <td className="py-2.5 text-emerald-400">{walkForward.training.winRate}%</td>
-                        <td className="py-2.5 text-cyan-400">{walkForward.training.profitFactor}</td>
-                        <td className="py-2.5 text-rose-400">-{walkForward.training.maxDrawdownPercent}%</td>
+                        <td className="py-2.5 font-sans font-bold text-slate-200">آموزش (۶۰٪)</td>
+                        <td className="py-2.5 text-slate-300 num">{walkForward.training.totalTrades}</td>
+                        <td className="py-2.5 text-emerald-400 num">{walkForward.training.winRate}%</td>
+                        <td className="py-2.5 text-cyan-400 num">{walkForward.training.profitFactor}</td>
+                        <td className="py-2.5 text-rose-400 num">-{walkForward.training.maxDrawdownPercent}%</td>
                       </tr>
                       <tr>
-                        <td className="py-2.5 font-sans font-bold text-slate-200">
-                          Validation (20%)
-                        </td>
-                        <td className="py-2.5 text-slate-300">{walkForward.validation.totalTrades}</td>
-                        <td className="py-2.5 text-emerald-400">{walkForward.validation.winRate}%</td>
-                        <td className="py-2.5 text-cyan-400">{walkForward.validation.profitFactor}</td>
-                        <td className="py-2.5 text-rose-400">-{walkForward.validation.maxDrawdownPercent}%</td>
+                        <td className="py-2.5 font-sans font-bold text-slate-200">اعتبارسنجی (۲۰٪)</td>
+                        <td className="py-2.5 text-slate-300 num">{walkForward.validation.totalTrades}</td>
+                        <td className="py-2.5 text-emerald-400 num">{walkForward.validation.winRate}%</td>
+                        <td className="py-2.5 text-cyan-400 num">{walkForward.validation.profitFactor}</td>
+                        <td className="py-2.5 text-rose-400 num">-{walkForward.validation.maxDrawdownPercent}%</td>
                       </tr>
                       <tr>
-                        <td className="py-2.5 font-sans font-bold text-slate-200">
-                          Out-of-Sample (20%)
-                        </td>
-                        <td className="py-2.5 text-slate-300">{walkForward.outOfSample.totalTrades}</td>
-                        <td className="py-2.5 text-emerald-400">{walkForward.outOfSample.winRate}%</td>
-                        <td className="py-2.5 text-cyan-400">{walkForward.outOfSample.profitFactor}</td>
-                        <td className="py-2.5 text-rose-400">-{walkForward.outOfSample.maxDrawdownPercent}%</td>
+                        <td className="py-2.5 font-sans font-bold text-slate-200">خارج از نمونه (۲۰٪)</td>
+                        <td className="py-2.5 text-slate-300 num">{walkForward.outOfSample.totalTrades}</td>
+                        <td className="py-2.5 text-emerald-400 num">{walkForward.outOfSample.winRate}%</td>
+                        <td className="py-2.5 text-cyan-400 num">{walkForward.outOfSample.profitFactor}</td>
+                        <td className="py-2.5 text-rose-400 num">-{walkForward.outOfSample.maxDrawdownPercent}%</td>
                       </tr>
                     </tbody>
                   </table>
@@ -412,145 +365,122 @@ export const BacktestDashboard: React.FC<Props> = ({
               )}
             </div>
 
-            {/* False Signal Root-Cause Breakdown */}
+            {/* تفکیک علل شکست ستاپ‌های زیان‌ده */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl">
               <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
                 <div className="flex items-center gap-2">
                   <PieChart className="w-5 h-5 text-rose-400" />
-                  <h3 className="font-bold text-slate-100 text-sm">
-                    Losing Setup Failure Mode Breakdown
-                  </h3>
+                  <h3 className="font-bold text-slate-100 text-sm">تحلیل علل شکست ستاپ‌های زیان‌ده</h3>
                 </div>
                 <span className="text-xs text-slate-400 font-mono">
-                  Total Losses: {failure?.totalLosses || 0}
+                  مجموع ضررها: <span className="num">{failure?.totalLosses || 0}</span>
                 </span>
               </div>
 
               {failure && failure.totalLosses > 0 ? (
                 <div className="flex flex-col gap-2.5 text-xs">
-                  <div>
-                    <div className="flex justify-between mb-1 text-slate-300">
-                      <span>Liquidity Level Breach (No Reclaim)</span>
-                      <span className="font-mono">{failure.liquidityFailures}</span>
-                    </div>
-                    <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                      <div
-                        className="bg-rose-500 h-full rounded-full"
-                        style={{ width: `${(failure.liquidityFailures / failure.totalLosses) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between mb-1 text-slate-300">
-                      <span>False Breakout & Trap Continuation</span>
-                      <span className="font-mono">{failure.falseBreakouts}</span>
-                    </div>
-                    <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                      <div
-                        className="bg-purple-500 h-full rounded-full"
-                        style={{ width: `${(failure.falseBreakouts / failure.totalLosses) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between mb-1 text-slate-300">
-                      <span>Weak Displacement & Momentum Stagnation</span>
-                      <span className="font-mono">{failure.weakDisplacement}</span>
-                    </div>
-                    <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                      <div
-                        className="bg-amber-500 h-full rounded-full"
-                        style={{ width: `${(failure.weakDisplacement / failure.totalLosses) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between mb-1 text-slate-300">
-                      <span>Opposing HTF Macro Trend Conflict</span>
-                      <span className="font-mono">{failure.badHTFAlignment}</span>
-                    </div>
-                    <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                      <div
-                        className="bg-blue-500 h-full rounded-full"
-                        style={{ width: `${(failure.badHTFAlignment / failure.totalLosses) * 100}%` }}
-                      />
-                    </div>
-                  </div>
+                  {[
+                    { label: 'شکست سطح نقدینگی (بدون بازپس‌گیری)', count: failure.liquidityFailures, color: 'bg-rose-500' },
+                    { label: 'شکست جعلی و تله ادامه حرکت', count: failure.falseBreakouts, color: 'bg-purple-500' },
+                    { label: 'دیسپلیسمنت ضعیف و رکود مومنتوم', count: failure.weakDisplacement, color: 'bg-amber-500' },
+                    { label: 'تضاد با روند کلان تایم‌فریم بالا', count: failure.badHTFAlignment, color: 'bg-blue-500' },
+                    { label: 'عدم تأیید حجمی', count: failure.volumeFailure, color: 'bg-cyan-500' },
+                    { label: 'فشار فاندینگ افراطی', count: failure.extremeFundingSqueeze, color: 'bg-pink-500' },
+                  ]
+                    .filter((row) => row.count > 0)
+                    .map((row) => (
+                      <div key={row.label}>
+                        <div className="flex justify-between mb-1 text-slate-300">
+                          <span>{row.label}</span>
+                          <span className="font-mono num">{row.count}</span>
+                        </div>
+                        <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                          <div
+                            className={`${row.color} h-full rounded-full`}
+                            style={{ width: `${(row.count / failure.totalLosses) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
                 </div>
               ) : (
                 <div className="py-8 text-center text-slate-500 text-xs">
-                  No loss breakdown available for current configuration
+                  برای پیکربندی فعلی، تفکیک ضرری در دسترس نیست
                 </div>
               )}
             </div>
           </div>
 
-          {/* Historical Simulated Trades Log Table */}
+          {/* جدول لاگ معاملات شبیه‌سازی‌شده */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xl">
-            <div className="p-4 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between">
+            <div className="p-4 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2">
               <h3 className="font-bold text-slate-100 text-sm">
-                Simulated Execution Log ({report.trades.length} Trades)
+                گزارش اجرای شبیه‌سازی‌شده (<span className="num">{report.trades.length}</span> معامله)
               </h3>
-              <span className="text-xs text-slate-400">
-                Period: {report.startDate} – {report.endDate}
-              </span>
+              <div className="flex items-center gap-4 text-xs text-slate-400">
+                <span>
+                  بازه:{' '}
+                  <span className="num">
+                    {new Date(report.startDate).toLocaleDateString('fa-IR')} –{' '}
+                    {new Date(report.endDate).toLocaleDateString('fa-IR')}
+                  </span>
+                </span>
+                <span>
+                  میانگین نگهداری: <span className="num">{overall.avgHoldCandles}</span> کندل
+                </span>
+              </div>
             </div>
 
             <div className="overflow-x-auto max-h-72">
-              <table className="w-full text-left text-xs border-collapse font-mono">
+              <table className="w-full text-right text-xs border-collapse font-mono">
                 <thead>
                   <tr className="bg-slate-950/50 border-b border-slate-800 text-slate-400 font-sans text-[11px]">
-                    <th className="py-2.5 px-4">Direction</th>
-                    <th className="py-2.5 px-4">Entry Time</th>
-                    <th className="py-2.5 px-4">Entry Price</th>
-                    <th className="py-2.5 px-4">Stop Loss</th>
-                    <th className="py-2.5 px-4">TP1 / TP2</th>
-                    <th className="py-2.5 px-4">Exit Price</th>
-                    <th className="py-2.5 px-4">Result</th>
-                    <th className="py-2.5 px-4">Realized RR</th>
+                    <th className="py-2.5 px-4">جهت</th>
+                    <th className="py-2.5 px-4">زمان ورود</th>
+                    <th className="py-2.5 px-4">قیمت ورود</th>
+                    <th className="py-2.5 px-4">حد ضرر</th>
+                    <th className="py-2.5 px-4">هدف ۱ / هدف ۲</th>
+                    <th className="py-2.5 px-4">قیمت خروج</th>
+                    <th className="py-2.5 px-4">نتیجه</th>
+                    <th className="py-2.5 px-4">ریوارد محقق‌شده</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {report.trades.slice(-25).reverse().map((t) => (
-                    <tr key={t.id} className="hover:bg-slate-800/30">
-                      <td className="py-2.5 px-4 font-sans font-bold">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] ${
-                            t.direction === 'LONG'
-                              ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                              : 'bg-rose-950 text-rose-400 border border-rose-800'
-                          }`}
-                        >
-                          {t.direction}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-4 text-slate-400 font-sans text-[11px]">
-                        {new Date(t.entryTime).toLocaleDateString()}{' '}
-                        {new Date(t.entryTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </td>
-                      <td className="py-2.5 px-4 text-slate-200">${t.entryPrice.toLocaleString()}</td>
-                      <td className="py-2.5 px-4 text-rose-400">${t.stopLoss.toLocaleString()}</td>
-                      <td className="py-2.5 px-4 text-emerald-400">
-                        ${t.tp1.toLocaleString()} / ${t.tp2.toLocaleString()}
-                      </td>
-                      <td className="py-2.5 px-4 text-slate-300">${t.exitPrice.toLocaleString()}</td>
-                      <td className="py-2.5 px-4">
-                        <span
-                          className={`font-bold ${
-                            t.status === 'WIN' ? 'text-emerald-400' : 'text-rose-400'
-                          }`}
-                        >
-                          {t.status} ({t.exitReason})
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-4 font-bold text-cyan-400">
-                        {t.rrRealized > 0 ? `+${t.rrRealized}R` : `${t.rrRealized}R`}
-                      </td>
-                    </tr>
-                  ))}
+                  {report.trades
+                    .slice(-25)
+                    .reverse()
+                    .map((t) => (
+                      <tr key={t.id} className="hover:bg-slate-800/30">
+                        <td className="py-2.5 px-4 font-sans font-bold">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] ${
+                              t.direction === 'LONG'
+                                ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                                : 'bg-rose-950 text-rose-400 border border-rose-800'
+                            }`}
+                          >
+                            {faLabel(FA_DIRECTION, t.direction)}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-4 text-slate-400 font-sans text-[11px]">
+                          {formatFaDateTime(t.entryTime)}
+                        </td>
+                        <td className="py-2.5 px-4 text-slate-200 num">{formatPrice(t.entryPrice)}</td>
+                        <td className="py-2.5 px-4 text-rose-400 num">{formatPrice(t.stopLoss)}</td>
+                        <td className="py-2.5 px-4 text-emerald-400 num">
+                          {formatPrice(t.tp1)} / {formatPrice(t.tp2)}
+                        </td>
+                        <td className="py-2.5 px-4 text-slate-300 num">{formatPrice(t.exitPrice)}</td>
+                        <td className="py-2.5 px-4">
+                          <span className={`font-sans font-bold ${t.status === 'WIN' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {t.status === 'WIN' ? 'برد' : 'باخت'} ({faLabel(FA_EXIT_REASON, t.exitReason)})
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-4 font-bold text-cyan-400 num">
+                          {t.rrRealized > 0 ? `+${t.rrRealized}R` : `${t.rrRealized}R`}
+                        </td>
+                      </tr>
+                    ))}
                 </tbody>
               </table>
             </div>

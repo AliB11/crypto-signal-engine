@@ -51,7 +51,8 @@
     "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6",
-    "tailwind-merge": "^3.7.0"
+    "tailwind-merge": "^3.7.0",
+    "vazirmatn": "^33.0.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.17",

@@ -90,13 +90,14 @@ export function analyzeMultiTimeframe(
 
   const alignmentScore = Math.max(10, Math.min(100, Math.round(score)));
 
-  let confluenceDescription = 'Mixed timeframe directional bias';
+  const htfTrendFa = htfTrend === 'BULLISH' ? 'صعودی' : htfTrend === 'BEARISH' ? 'نزولی' : 'خنثی';
+  let confluenceDescription = 'سوگیری جهت‌دار تایم‌فریم‌ها نامختلط و متناقض است';
   if (alignmentScore >= 80) {
-    confluenceDescription = `Full HTF + LTF ${htfTrend} alignment across Daily, 4H, and Lower Timeframes`;
+    confluenceDescription = `هم‌راستایی کامل ${htfTrendFa} در تایم‌فریم‌های بالا (روزانه و ۴ساعته) و پایین`;
   } else if (alignmentScore >= 65) {
-    confluenceDescription = `Moderate ${htfTrend} confluence with key LTF structure shift`;
+    confluenceDescription = `هم‌افزایی ${htfTrendFa} متوسط همراه با تغییر ساختار کلیدی در تایم پایین`;
   } else if (alignmentScore <= 40) {
-    confluenceDescription = 'Conflicting multi-timeframe structure; choppy consolidation';
+    confluenceDescription = 'ساختار متناقض بین تایم‌فریم‌ها؛ تثبیت پرنوسان و بی‌جهت';
   }
 
   return {

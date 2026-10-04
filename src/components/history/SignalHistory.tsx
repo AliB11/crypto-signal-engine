@@ -7,11 +7,11 @@ import {
   Star,
   Download,
   Trash2,
-  TrendingUp,
-  TrendingDown,
-  ArrowRight,
+  ArrowLeft,
   BookmarkCheck,
 } from 'lucide-react';
+import { formatFaTime, toFaDigits } from '@/lib/format';
+import { faLabel, FA_DIRECTION } from '@/lib/i18n';
 
 interface Props {
   onSelectSymbol: (symbol: string) => void;
@@ -36,10 +36,12 @@ export const SignalHistory: React.FC<Props> = ({
     try {
       const stored = localStorage.getItem('crypto_signal_scanner_history');
       if (stored) {
+        // آب‌سازی اولیه تاریخچه از حافظه محلی — فقط هنگام مانت
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setSnapshots(JSON.parse(stored));
       }
     } catch {
-      // Ignore localStorage errors
+      // خطاهای دسترسی به حافظه محلی نادیده گرفته می‌شوند
     }
   }, []);
 
@@ -60,19 +62,19 @@ export const SignalHistory: React.FC<Props> = ({
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Watchlist Section */}
+      {/* دیده‌بان دارایی‌های سنجاق‌شده */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl">
         <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
           <div className="flex items-center gap-2">
             <Star className="w-5 h-5 text-amber-400 fill-amber-400" />
-            <h3 className="font-bold text-slate-100 text-sm">Pinned Watchlist Assets</h3>
+            <h3 className="font-bold text-slate-100 text-sm">دارایی‌های سنجاق‌شده در دیده‌بان</h3>
           </div>
-          <span className="text-xs text-slate-400">{favorites.length} Pinned</span>
+          <span className="text-xs text-slate-400">{toFaDigits(favorites.length)} مورد سنجاق‌شده</span>
         </div>
 
         {favorites.length === 0 ? (
-          <div className="py-6 text-center text-slate-500 text-xs">
-            No favorite symbols pinned yet. Click the star icon on any table row to pin assets here.
+          <div className="py-6 text-center text-slate-500 text-xs leading-relaxed">
+            هنوز نمادی سنجاق نشده است. با کلیک روی آیکون ستاره در هر ردیف جدول، دارایی موردنظر را اینجا سنجاق کنید.
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3">
@@ -83,10 +85,10 @@ export const SignalHistory: React.FC<Props> = ({
                 className="p-3 bg-slate-950/80 border border-slate-800 hover:border-cyan-500/60 rounded-lg cursor-pointer transition-all flex items-center justify-between group"
               >
                 <div>
-                  <span className="font-bold text-slate-200 text-xs block group-hover:text-cyan-300">
+                  <span className="font-bold text-slate-200 text-xs block group-hover:text-cyan-300 num">
                     {sym}
                   </span>
-                  <span className="text-[10px] text-slate-500">Quick Analyze</span>
+                  <span className="text-[10px] text-slate-500">تحلیل سریع</span>
                 </div>
                 <button
                   onClick={(e) => {
@@ -94,6 +96,7 @@ export const SignalHistory: React.FC<Props> = ({
                     onToggleFavorite(sym);
                   }}
                   className="text-slate-500 hover:text-rose-400 transition-colors"
+                  title="حذف از دیده‌بان"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -103,13 +106,13 @@ export const SignalHistory: React.FC<Props> = ({
         )}
       </div>
 
-      {/* Local Historical Snapshots */}
+      {/* تاریخچه محلی سیگنال‌ها */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl">
         <div className="flex flex-wrap items-center justify-between pb-3 border-b border-slate-800 mb-4 gap-3">
           <div className="flex items-center gap-2">
             <History className="w-5 h-5 text-cyan-400" />
             <h3 className="font-bold text-slate-100 text-sm">
-              Local Browser Signal History (Zero Server Database)
+              تاریخچه سیگنال‌های محلی مرورگر (بدون دیتابیس سرور)
             </h3>
           </div>
 
@@ -121,14 +124,14 @@ export const SignalHistory: React.FC<Props> = ({
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition-colors"
                 >
                   <Download className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Export JSON</span>
+                  <span>خروجی JSON</span>
                 </button>
                 <button
                   onClick={clearHistory}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/40 text-xs font-medium transition-colors"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
-                  <span>Clear</span>
+                  <span>پاک کردن</span>
                 </button>
               </>
             )}
@@ -138,9 +141,9 @@ export const SignalHistory: React.FC<Props> = ({
         {snapshots.length === 0 ? (
           <div className="py-10 text-center text-slate-500 text-xs flex flex-col items-center justify-center gap-2">
             <BookmarkCheck className="w-8 h-8 text-slate-600" />
-            <span>No automatic local snapshots saved in this session yet.</span>
+            <span>هنوز هیچ تصویر لحظه‌ای در این نشست ذخیره نشده است.</span>
             <span className="text-[11px] text-slate-600">
-              When high-confluence setups trigger, they are preserved locally in your browser.
+              هرگاه ستاپی با هم‌افزایی بالا شناسایی شود، به‌صورت خودکار در مرورگر شما ذخیره می‌شود.
             </span>
           </div>
         ) : (
@@ -152,9 +155,7 @@ export const SignalHistory: React.FC<Props> = ({
                 className="p-3 bg-slate-950/70 border border-slate-800/80 hover:border-slate-700 rounded-lg flex items-center justify-between cursor-pointer transition-all text-xs"
               >
                 <div className="flex items-center gap-3">
-                  <span className="font-bold text-slate-200 text-sm font-sans">
-                    {snap.signal.symbol}
-                  </span>
+                  <span className="font-bold text-slate-200 text-sm num">{snap.signal.symbol}</span>
                   <span
                     className={`font-bold px-2 py-0.5 rounded text-[10px] ${
                       snap.signal.direction === 'LONG'
@@ -162,16 +163,16 @@ export const SignalHistory: React.FC<Props> = ({
                         : 'bg-rose-950 text-rose-400 border border-rose-800'
                     }`}
                   >
-                    {snap.signal.direction}
+                    {faLabel(FA_DIRECTION, snap.signal.direction)}
                   </span>
                   <span className="font-mono text-cyan-400 font-bold">
-                    Score: {snap.signal.score}
+                    امتیاز: <span className="num">{snap.signal.score}</span>
                   </span>
                 </div>
 
                 <div className="flex items-center gap-3 text-slate-400 text-[11px]">
-                  <span>{new Date(snap.savedAt).toLocaleTimeString()}</span>
-                  <ArrowRight className="w-3.5 h-3.5 text-slate-500" />
+                  <span className="num">{formatFaTime(snap.savedAt)}</span>
+                  <ArrowLeft className="w-3.5 h-3.5 text-slate-500" />
                 </div>
               </div>
             ))}
