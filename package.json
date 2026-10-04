@@ -1,0 +1,72 @@
+{
+  "name": "crypto-signal-scanner",
+  "version": "1.0.0",
+  "description": "Serverless, zero-database crypto market scanner with Multi-Timeframe Structure Analysis, Liquidity Layer 3 Engine, Derivatives Flow, and Context-Aware Signal Generation.",
+  "private": true,
+  "license": "MIT",
+  "author": "Crypto Signal Scanner Contributors",
+  "homepage": "https://github.com/crypto-signal-scanner/crypto-signal-scanner#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/crypto-signal-scanner/crypto-signal-scanner.git"
+  },
+  "bugs": {
+    "url": "https://github.com/crypto-signal-scanner/crypto-signal-scanner/issues"
+  },
+  "keywords": [
+    "crypto",
+    "scanner",
+    "trading-signals",
+    "liquidity-sweep",
+    "market-structure",
+    "fair-value-gap",
+    "order-block",
+    "multi-timeframe",
+    "open-interest",
+    "funding-rate",
+    "volume-profile",
+    "serverless",
+    "cloudflare-workers",
+    "binance-api",
+    "coingecko"
+  ],
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "npx tsx tests/run-tests.ts",
+    "test:watch": "npx tsx --watch tests/run-tests.ts",
+    "worker:dev": "npx wrangler dev src/worker.ts",
+    "worker:deploy": "npx wrangler deploy",
+    "clean": "rm -rf .next dist coverage",
+    "postinstall": "next typegen || true"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "hono": "^4.13.12",
+    "lightweight-charts": "^5.2.1",
+    "lucide-react": "^1.51.0",
+    "next": "16.2.6",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "tailwind-merge": "^3.7.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.1.17",
+    "@types/node": "22.19.15",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.6",
+    "postcss": "8.5.8",
+    "tailwindcss": "4.1.17",
+    "tsx": "^4.23.15",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "packageManager": "npm@10.0.0"
+}
