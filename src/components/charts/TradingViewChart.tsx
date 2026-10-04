@@ -11,6 +11,8 @@ import {
   LineStyle,
 } from 'lightweight-charts';
 import { Kline, LiquidityLevel, LiquiditySweep, MarketStructureSummary, TradePlan, Timeframe } from '@/types/market';
+import { faLabel, FA_LEVEL_TYPE, FA_TREND } from '@/lib/i18n';
+import { formatPrice } from '@/lib/format';
 
 interface Props {
   candles: Kline[];
@@ -73,7 +75,7 @@ export const TradingViewChart: React.FC<Props> = ({
 
     chartInstanceRef.current = chart;
 
-    const candleSeries = chart.addSeries(CandlestickSeries, {
+    const candleSeries: ISeriesApi<'Candlestick'> = chart.addSeries(CandlestickSeries, {
       upColor: '#10b981',
       downColor: '#ef4444',
       borderVisible: false,
@@ -94,7 +96,7 @@ export const TradingViewChart: React.FC<Props> = ({
 
     candleSeries.setData(formattedData);
 
-    // Add Trade Plan Price Lines
+    // خطوط برنامه معامله
     if (tradePlan && (activeOverlayTab === 'ALL' || activeOverlayTab === 'PLAN')) {
       candleSeries.createPriceLine({
         price: tradePlan.entry.optimal,
@@ -102,7 +104,7 @@ export const TradingViewChart: React.FC<Props> = ({
         lineWidth: 2,
         lineStyle: LineStyle.Solid,
         axisLabelVisible: true,
-        title: `ENTRY (${tradePlan.entry.type})`,
+        title: 'ورود بهینه',
       });
 
       candleSeries.createPriceLine({
@@ -111,7 +113,7 @@ export const TradingViewChart: React.FC<Props> = ({
         lineWidth: 2,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: true,
-        title: `INVALIDATION SL (-${tradePlan.stopLossPercent}%)`,
+        title: `حد ضرر (-${tradePlan.stopLossPercent}%)`,
       });
 
       candleSeries.createPriceLine({
@@ -120,7 +122,7 @@ export const TradingViewChart: React.FC<Props> = ({
         lineWidth: 2,
         lineStyle: LineStyle.Dotted,
         axisLabelVisible: true,
-        title: `TP1 (+${tradePlan.tp1Percent}%)`,
+        title: `هدف ۱ (+${tradePlan.tp1Percent}%)`,
       });
 
       candleSeries.createPriceLine({
@@ -129,11 +131,11 @@ export const TradingViewChart: React.FC<Props> = ({
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
         axisLabelVisible: true,
-        title: `TP2 (+${tradePlan.tp2Percent}%)`,
+        title: `هدف ۲ (+${tradePlan.tp2Percent}%)`,
       });
     }
 
-    // Add Key Liquidity Lines (EQH, EQL, PDH, PDL)
+    // سطوح کلیدی نقدینگی (EQH، EQL، PDH، PDL و...)
     if (liquidityLevels.length > 0 && (activeOverlayTab === 'ALL' || activeOverlayTab === 'LIQUIDITY')) {
       const topLevels = liquidityLevels.filter((l) => l.strength >= 80).slice(0, 6);
       topLevels.forEach((lvl) => {
@@ -148,9 +150,42 @@ export const TradingViewChart: React.FC<Props> = ({
           lineWidth: 1,
           lineStyle: LineStyle.LargeDashed,
           axisLabelVisible: true,
-          title: `${lvl.type.replace(/_/g, ' ')} ${lvl.swept ? '(SWEPT)' : ''}`,
+          title: `${faLabel(FA_LEVEL_TYPE, lvl.type)}${lvl.swept ? ' (سوئیپ‌شده)' : ''}`,
         });
       });
+    }
+
+    // رویدادهای ساختاری (BOS / MSS) — پیش‌تر تب «ساختار» خروجی خالی داشت
+    if (structure && (activeOverlayTab === 'ALL' || activeOverlayTab === 'STRUCTURE')) {
+      const structureEvents = [structure.recentBOS, structure.recentMSS].filter(
+        (e): e is NonNullable<typeof e> => Boolean(e)
+      );
+      structureEvents.slice(0, 4).forEach((ev) => {
+        const isMSS = ev.type === 'MSS';
+        candleSeries.createPriceLine({
+          price: ev.price,
+          color: isMSS ? '#f59e0b' : '#22d3ee',
+          lineWidth: 1,
+          lineStyle: LineStyle.SparseDotted,
+          axisLabelVisible: true,
+          title: `${isMSS ? 'MSS' : 'BOS'} ${faLabel(FA_TREND, ev.direction)}`,
+        });
+      });
+
+      // میانه گپ‌های نقدینگی پرنشده
+      structure.fvgs
+        .filter((f) => !f.filled)
+        .slice(-3)
+        .forEach((fvg) => {
+          candleSeries.createPriceLine({
+            price: fvg.midpoint,
+            color: '#8b5cf6',
+            lineWidth: 1,
+            lineStyle: LineStyle.LargeDashed,
+            axisLabelVisible: true,
+            title: 'گپ نقدینگی (FVG)',
+          });
+        });
     }
 
     chart.timeScale().fitContent();
@@ -170,28 +205,32 @@ export const TradingViewChart: React.FC<Props> = ({
         chartInstanceRef.current = null;
       }
     };
-  }, [candles, liquidityLevels, tradePlan, activeOverlayTab, timeframe, symbol]);
+  }, [candles, liquidityLevels, structure, tradePlan, activeOverlayTab, timeframe, symbol]);
+
+  const lastSweep = sweeps.length > 0 ? sweeps[sweeps.length - 1] : null;
 
   return (
     <div className="flex flex-col bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
-      {/* Chart Top Bar Controls */}
+      {/* نوار بالای نمودار */}
       <div className="flex flex-wrap items-center justify-between px-4 py-3 bg-slate-950/80 border-b border-slate-800 gap-2">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <span className="font-bold text-slate-100 tracking-wide text-lg">{symbol}</span>
-            <span className="px-2 py-0.5 text-xs font-semibold rounded bg-cyan-950 text-cyan-400 border border-cyan-800">
+            <span className="font-bold text-slate-100 tracking-wide text-lg num">{symbol}</span>
+            <span className="px-2 py-0.5 text-xs font-semibold rounded bg-cyan-950 text-cyan-400 border border-cyan-800 num">
               {timeframe.toUpperCase()}
             </span>
           </div>
 
           <div className="hidden sm:flex items-center gap-1.5 text-xs text-slate-400">
-            <span>Candles: {candles.length}</span>
+            <span>
+              کندل‌ها: <span className="num">{candles.length}</span>
+            </span>
             <span>•</span>
-            <span className="text-emerald-400">Live Binance Feed</span>
+            <span className="text-emerald-400">فید زنده بایننس</span>
           </div>
         </div>
 
-        {/* Overlay Filters */}
+        {/* فیلتر لایه‌های نمایش */}
         <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs">
           {(['ALL', 'LIQUIDITY', 'STRUCTURE', 'PLAN'] as const).map((tab) => (
             <button
@@ -204,29 +243,28 @@ export const TradingViewChart: React.FC<Props> = ({
               }`}
             >
               {tab === 'ALL'
-                ? 'All Layers'
+                ? 'همه لایه‌ها'
                 : tab === 'LIQUIDITY'
-                ? 'Liquidity Map'
+                ? 'نقشه نقدینگی'
                 : tab === 'STRUCTURE'
-                ? 'Structure'
-                : 'Trade Plan'}
+                ? 'ساختار'
+                : 'برنامه معامله'}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Main Chart Canvas */}
+      {/* بوم اصلی نمودار — بوم نمودار مالی چپ‌به‌راست ایزوله می‌شود */}
       <div className="relative w-full h-[480px]">
-        <div ref={chartContainerRef} className="w-full h-full" />
+        <div dir="ltr" ref={chartContainerRef} className="w-full h-full" />
 
-        {/* Floating Badges */}
+        {/* نشان‌های شناور */}
         <div className="absolute top-3 left-3 flex flex-col gap-1.5 pointer-events-none z-10 text-[11px]">
-          {sweeps.length > 0 && (
+          {lastSweep && (
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-purple-950/90 border border-purple-700/60 text-purple-300 backdrop-blur-md">
               <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
               <span>
-                Recent Sweep: {sweeps[sweeps.length - 1].type.replace(/_/g, ' ')} @ $
-                {sweeps[sweeps.length - 1].levelPrice.toLocaleString()}
+                سوئیپ اخیر: {faLabel(FA_LEVEL_TYPE, lastSweep.levelType)} @ {formatPrice(lastSweep.levelPrice)}
               </span>
             </div>
           )}
@@ -235,42 +273,44 @@ export const TradingViewChart: React.FC<Props> = ({
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-950/90 border border-amber-700/60 text-amber-300 backdrop-blur-md">
               <span className="w-2 h-2 rounded-full bg-amber-400" />
               <span>
-                Shift (MSS): {structure.recentMSS.direction} Shift @ $
-                {structure.recentMSS.price.toLocaleString()}
+                تغییر ساختار (MSS): {faLabel(FA_TREND, structure.recentMSS.direction)} @{' '}
+                {formatPrice(structure.recentMSS.price)}
               </span>
             </div>
           )}
         </div>
       </div>
 
-      {/* Legend Footer */}
+      {/* راهنمای رنگ‌ها */}
       <div className="flex flex-wrap items-center justify-between px-4 py-2.5 bg-slate-950 text-[11px] text-slate-400 border-t border-slate-800 gap-3">
         <div className="flex items-center gap-4 flex-wrap">
           <div className="flex items-center gap-1.5">
             <span className="w-3 h-0.5 bg-cyan-500 rounded-full" />
-            <span>Entry Zone</span>
+            <span>محدوده ورود</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="w-3 h-0.5 bg-rose-500 rounded-full" />
-            <span>Invalidation SL</span>
+            <span>حد ضرر (بی‌اعتبارسازی)</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="w-3 h-0.5 bg-emerald-500 rounded-full" />
-            <span>TP Targets</span>
+            <span>اهداف سود</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="w-3 h-0.5 bg-pink-500 rounded-full" />
-            <span>Equal Highs / Lows</span>
+            <span>سقف‌ها / کف‌های برابر</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="w-3 h-0.5 bg-yellow-500 rounded-full" />
-            <span>PDH / PDL</span>
+            <span>سقف / کف روز قبل</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 h-0.5 bg-violet-500 rounded-full" />
+            <span>گپ نقدینگی (FVG)</span>
           </div>
         </div>
 
-        <div className="text-slate-500">
-          Lightweight Financial Charting • Zero Database Dependency
-        </div>
+        <div className="text-slate-500">نمودار سبک‌وزن مالی • بدون وابستگی به دیتابیس</div>
       </div>
     </div>
   );

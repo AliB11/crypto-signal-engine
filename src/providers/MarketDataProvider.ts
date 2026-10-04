@@ -12,4 +12,6 @@ export interface MarketDataProvider {
   getDerivativesData(symbol: string): Promise<DerivativesData>;
   getMetadata(symbol: string): Promise<CoinMetadata | null>;
   getTopSymbols(count?: number): Promise<string[]>;
+  /** وضعیت زنده بودن منبع داده (در صورت پشتیبانی پروایدر) */
+  getDataStatus?(): { live: boolean };
 }

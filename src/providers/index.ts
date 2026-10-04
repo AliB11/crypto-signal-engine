@@ -29,5 +29,12 @@ export class ProviderManager {
 }
 
 export const dataProvider = ProviderManager.getInstance().getPrimary();
+
+/** منبع فعلی داده: زنده یا شبیه‌سازی‌شده */
+export function getDataSource(): 'live' | 'simulated' {
+  const status = dataProvider.getDataStatus?.();
+  return status && status.live ? 'live' : 'simulated';
+}
+
 export { BinanceProvider, CoinGeckoProvider };
 export type { MarketDataProvider };

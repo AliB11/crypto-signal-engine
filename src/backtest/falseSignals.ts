@@ -1,4 +1,17 @@
-import { BacktestTrade, FalseSignalBreakdown } from '../types/market';
+import { BacktestTrade, FailureCategory, FalseSignalBreakdown } from '../types/market';
+
+/**
+ * طبقه‌بندی علل شکست معاملات زیان‌ده — برچسب‌ها دسته‌بندی واقعی هر معامله است
+ * و دیگر هیچ توزیع مصنوعی ساخته نمی‌شود (دادهٔ صادقانه).
+ */
+const LEGACY_TEXT_MAP: { match: RegExp; category: FailureCategory }[] = [
+  { match: /نقدینگی|Liquidity/i, category: 'LIQUIDITY_FAIL' },
+  { match: /شکست جعلی|تله|Breakout|Trap/i, category: 'FALSE_BREAKOUT' },
+  { match: /دیسپلیسمنت|مومنتوم|Displacement|Momentum/i, category: 'WEAK_DISPLACEMENT' },
+  { match: /تایم‌فریم بالا|تایم بالا|HTF/i, category: 'HTF_CONFLICT' },
+  { match: /حجم|Volume/i, category: 'VOLUME_FAIL' },
+  { match: /فاندینگ|Funding/i, category: 'FUNDING_SQUEEZE' },
+];
 
 export function analyzeFalseSignals(trades: BacktestTrade[]): FalseSignalBreakdown {
   const losses = trades.filter((t) => t.status === 'LOSS');
@@ -12,23 +25,34 @@ export function analyzeFalseSignals(trades: BacktestTrade[]): FalseSignalBreakdo
   let extremeFundingSqueeze = 0;
 
   for (const trade of losses) {
-    const reason = trade.failureReason || 'Liquidity failure';
-    if (reason.includes('Liquidity')) liquidityFailures++;
-    else if (reason.includes('Breakout') || reason.includes('Trap')) falseBreakouts++;
-    else if (reason.includes('Displacement')) weakDisplacement++;
-    else if (reason.includes('HTF')) badHTFAlignment++;
-    else if (reason.includes('Volume')) volumeFailure++;
-    else if (reason.includes('Funding')) extremeFundingSqueeze++;
-    else liquidityFailures++;
-  }
+    let category: FailureCategory | undefined = trade.failureCategory;
 
-  // Ensure minimum realistic distribution if some categories zero
-  if (totalLosses > 0 && liquidityFailures === totalLosses) {
-    liquidityFailures = Math.ceil(totalLosses * 0.35);
-    falseBreakouts = Math.ceil(totalLosses * 0.25);
-    weakDisplacement = Math.ceil(totalLosses * 0.15);
-    badHTFAlignment = Math.ceil(totalLosses * 0.15);
-    volumeFailure = Math.max(0, totalLosses - liquidityFailures - falseBreakouts - weakDisplacement - badHTFAlignment);
+    // سازگاری با داده‌های قدیمی: اگر دسته نداشت، از روی متن تشخیص بده
+    if (!category && trade.failureReason) {
+      category = LEGACY_TEXT_MAP.find((m) => m.match.test(trade.failureReason || ''))?.category;
+    }
+
+    switch (category) {
+      case 'FALSE_BREAKOUT':
+        falseBreakouts++;
+        break;
+      case 'WEAK_DISPLACEMENT':
+        weakDisplacement++;
+        break;
+      case 'HTF_CONFLICT':
+        badHTFAlignment++;
+        break;
+      case 'VOLUME_FAIL':
+        volumeFailure++;
+        break;
+      case 'FUNDING_SQUEEZE':
+        extremeFundingSqueeze++;
+        break;
+      case 'LIQUIDITY_FAIL':
+      default:
+        liquidityFailures++;
+        break;
+    }
   }
 
   return {

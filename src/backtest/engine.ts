@@ -114,7 +114,8 @@ export function runBacktest(
           t.status = 'LOSS';
           t.rrRealized = -1.0;
           t.pnlPercent = -Math.abs(((t.entryPrice - t.stopLoss) / t.entryPrice) * 100);
-          t.failureReason = 'Liquidity level failure & structural stop breached';
+          t.failureReason = 'شکست سطح نقدینگی و عبور از حد ساختاری';
+          t.failureCategory = 'LIQUIDITY_FAIL';
           exitHappened = true;
         } else if (currentCandle.high >= t.tp2) {
           t.exitTime = currentCandle.timestamp;
@@ -140,7 +141,10 @@ export function runBacktest(
           const pnl = ((currentCandle.close - t.entryPrice) / t.entryPrice) * 100;
           t.pnlPercent = pnl;
           t.rrRealized = pnl > 0 ? 0.8 : -0.8;
-          if (t.status === 'LOSS') t.failureReason = 'Weak displacement and momentum stagnation';
+          if (t.status === 'LOSS') {
+            t.failureReason = 'دیسپلیسمنت ضعیف و رکود مومنتوم';
+            t.failureCategory = 'WEAK_DISPLACEMENT';
+          }
           exitHappened = true;
         }
       } else if (t.direction === 'SHORT') {
@@ -151,7 +155,8 @@ export function runBacktest(
           t.status = 'LOSS';
           t.rrRealized = -1.0;
           t.pnlPercent = -Math.abs(((t.stopLoss - t.entryPrice) / t.entryPrice) * 100);
-          t.failureReason = 'False breakout and buy-side liquidity continuation';
+          t.failureReason = 'شکست جعلی و ادامه حرکت به سمت نقدینگی سمت خرید';
+          t.failureCategory = 'FALSE_BREAKOUT';
           exitHappened = true;
         } else if (currentCandle.low <= t.tp2) {
           t.exitTime = currentCandle.timestamp;
@@ -177,12 +182,16 @@ export function runBacktest(
           const pnl = ((t.entryPrice - currentCandle.close) / t.entryPrice) * 100;
           t.pnlPercent = pnl;
           t.rrRealized = pnl > 0 ? 0.8 : -0.8;
-          if (t.status === 'LOSS') t.failureReason = 'Momentum failed to expand';
+          if (t.status === 'LOSS') {
+            t.failureReason = 'مومنتوم قادر به گسترش نبود';
+            t.failureCategory = 'WEAK_DISPLACEMENT';
+          }
           exitHappened = true;
         }
       }
 
       if (exitHappened) {
+        t.holdCandles = activeTrade.candlesOpen;
         trades.push(t);
         activeTrade = null;
       }

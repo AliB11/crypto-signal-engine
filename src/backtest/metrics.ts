@@ -89,8 +89,17 @@ export function calculateBacktestMetrics(
   );
 
   const avgRR =
-    trades.length > 0
-      ? parseFloat((trades.reduce((s, t) => s + Math.max(0, t.rrRealized), 0) / Math.max(1, wins.length)).toFixed(2))
+    wins.length > 0
+      ? parseFloat((wins.reduce((s, t) => s + Math.max(0, t.rrRealized), 0) / wins.length).toFixed(2))
+      : 0;
+
+  // میانگین کندل‌های نگهداری — محاسبه‌شده از داده واقعی معاملات (نه عدد ثابت)
+  const holdSamples = trades.filter((t) => typeof t.holdCandles === 'number');
+  const avgHoldCandles =
+    holdSamples.length > 0
+      ? parseFloat(
+          (holdSamples.reduce((s, t) => s + (t.holdCandles || 0), 0) / holdSamples.length).toFixed(1)
+        )
       : 0;
 
   // Sharpe & Sortino (assuming risk free rate = 0)
@@ -123,7 +132,7 @@ export function calculateBacktestMetrics(
     avgRR,
     sharpeRatio,
     sortinoRatio,
-    avgHoldCandles: 8,
+    avgHoldCandles,
     cumulativeReturnPercent,
     equityCurve,
   };

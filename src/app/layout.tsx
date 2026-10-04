@@ -3,15 +3,15 @@ import type { ReactNode } from 'react';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Crypto Advanced Signal Scanner | Context-Aware Layer 3 Engine',
+  title: 'اسکنر سیگنال کریپتو | موتور نقدینگی لایه ۳',
   description:
-    'Serverless real-time crypto market scanner with Multi-Timeframe Structure, Liquidity Sweeps, Session Levels, Derivatives, and Advanced Liquidity Layer 3.',
+    'اسکنر بی‌درنگ و بدون سرور بازار ارزهای دیجیتال با تحلیل ساختار چند تایم‌فریم، سوئیپ نقدینگی، سطوح جلسات معاملاتی، جریان مشتقات و موتور پیشرفته نقدینگی لایه ۳.',
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className="dark">
-      <body className="bg-slate-950 text-slate-100 antialiased min-h-screen">
+    <html lang="fa" dir="rtl" className="dark">
+      <body className="bg-slate-950 text-slate-100 antialiased min-h-screen font-sans">
         {children}
       </body>
     </html>

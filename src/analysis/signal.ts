@@ -17,6 +17,8 @@ import {
   SignalWeights,
   TradePlan,
 } from '../types/market';
+import { roundPrice } from '../lib/format';
+import { faLabel, FA_LEVEL_TYPE } from '../lib/i18n';
 
 export const DEFAULT_WEIGHTS: SignalWeights = {
   liquidity: 0.2,
@@ -26,6 +28,16 @@ export const DEFAULT_WEIGHTS: SignalWeights = {
   volume: 0.1,
   derivatives: 0.1,
   advancedLayer3: 0.1,
+};
+
+/** مدت هر تایم‌فریم به میلی‌ثانیه */
+const TIMEFRAME_DURATION_MS: Record<Timeframe, number> = {
+  '1m': 60_000,
+  '5m': 300_000,
+  '15m': 900_000,
+  '1h': 3_600_000,
+  '4h': 14_400_000,
+  '1d': 86_400_000,
 };
 
 export function generateSignal(params: {
@@ -47,7 +59,6 @@ export function generateSignal(params: {
     symbol,
     timeframe,
     klines,
-    liquidityLevels,
     sweeps,
     structure,
     sessions,
@@ -59,12 +70,22 @@ export function generateSignal(params: {
   } = params;
 
   const w: SignalWeights = { ...DEFAULT_WEIGHTS, ...(params.weights || {}) };
-  const currentPrice = klines[klines.length - 1]?.close || 0;
-  const dataTimestamp = klines[klines.length - 1]?.timestamp || Date.now();
+  const lastKline = klines[klines.length - 1];
+  const currentPrice = lastKline?.close || 0;
+  const dataTimestamp = lastKline?.timestamp || Date.now();
   const analysisTimestamp = Date.now();
-  const isStale = Date.now() - dataTimestamp > 300000; // > 5 minutes stale
 
-  const reasons: string[] = [];
+  // تشخیص کهنگی داده: معیار، زمانِ انتظار برای بسته‌شدن آخرین کندل است (نه زمان باز شدن آن).
+  // در داده زنده بایننس آخرین کندل در حال تشکیل است و closeTime آن در آینده قرار دارد،
+  // بنابراین هشدار کهنگی فقط وقتی فعال می‌شود که داده واقعاً قدیمی باشد.
+  const expectedCloseTime = lastKline
+    ? lastKline.closeTime || lastKline.timestamp + TIMEFRAME_DURATION_MS[timeframe]
+    : Date.now();
+  const isStale = Date.now() - expectedCloseTime > 180_000;
+
+  // دلایل صعودی و نزولی جدا نگهداری می‌شوند تا فقط دلایل هم‌جهت با سیگنال نهایی نمایش داده شوند
+  const longReasons: string[] = [];
+  const shortReasons: string[] = [];
   const warnings: string[] = [];
 
   // 1. Calculate Component Scores
@@ -152,69 +173,75 @@ export function generateSignal(params: {
   // Bullish signals
   if (sslSweep) {
     longConfluence += 35;
-    reasons.push(`Sell-side liquidity sweep executed at $${sslSweep.levelPrice.toLocaleString()} (${sslSweep.levelType})`);
+    longReasons.push(
+      `سوئیپ نقدینگی سمت فروش روی ${faLabel(FA_LEVEL_TYPE, sslSweep.levelType)} در قیمت $${roundPrice(sslSweep.levelPrice)} انجام شد`
+    );
   }
   if (structure.recentMSS?.direction === 'BULLISH') {
     longConfluence += 30;
-    reasons.push('Bullish Market Structure Shift (MSS/CHoCH) confirmed');
+    longReasons.push('تغییر ساختار بازار صعودی (MSS/CHoCH) تأیید شد');
   } else if (structure.trend === 'BULLISH') {
     longConfluence += 15;
-    reasons.push('Established Bullish trend structure (Higher Highs & Higher Lows)');
+    longReasons.push('ساختار روند صعودی تثبیت‌شده (سقف‌ها و کف‌های بالاتر)');
   }
   if (mtf.htfTrend === 'BULLISH') {
     longConfluence += 25;
-    reasons.push('Higher Timeframe alignment bullish across 1D/4H/1H');
+    longReasons.push('هم‌راستایی صعودی در تایم‌فریم‌های بالای 1D/4H/1H');
   }
   if (structure.displacementDetected) {
     longConfluence += 15;
-    reasons.push('High-momentum displacement impulse detected');
+    longReasons.push('حرکت قدرتمند با مومنتوم بالا (دیسپلیسمنت) شناسایی شد');
   }
   if (volume.state === 'EXPANSION' || volume.imbalance > 10) {
     longConfluence += 15;
-    reasons.push(`Buyer volume dominance (+${volume.imbalance}% taker imbalance)`);
+    longReasons.push(`چیرگی حجم خریداران (عدم تعادل تیکر +${volume.imbalance}%)`);
   }
   if (derivatives.oiTrend === 'LONG_BUILDUP') {
     longConfluence += 15;
-    reasons.push('Futures Open Interest rising with price (Aggressive Long Buildup)');
+    longReasons.push('افزایش قراردادهای باز همراه با قیمت (انباشت تهاجمی لانگ)');
   } else if (derivatives.fundingCategory === 'NEGATIVE' || derivatives.fundingCategory === 'EXTREME_NEGATIVE') {
     longConfluence += 20;
-    reasons.push(`Negative funding rate (${(derivatives.fundingRate * 100).toFixed(4)}%) creating short squeeze potential`);
+    longReasons.push(
+      `فاندینگ ریت منفی (${(derivatives.fundingRate * 100).toFixed(4)}%) پتانسیل شورت اسکوئیز ایجاد می‌کند`
+    );
   }
   if (sessions.judasSwingDetected && sessions.sessions.asian.lowSwept) {
     longConfluence += 20;
-    reasons.push('London Judas Swing swept Asian Session Low liquidity');
+    longReasons.push('سوئینگ جوداس لندن، نقدینگی کف جلسه آسیا را سوئیپ کرد');
   }
 
   // Bearish signals
   if (bslSweep) {
     shortConfluence += 35;
-    reasons.push(`Buy-side liquidity sweep executed at $${bslSweep.levelPrice.toLocaleString()} (${bslSweep.levelType})`);
+    shortReasons.push(
+      `سوئیپ نقدینگی سمت خرید روی ${faLabel(FA_LEVEL_TYPE, bslSweep.levelType)} در قیمت $${roundPrice(bslSweep.levelPrice)} انجام شد`
+    );
   }
   if (structure.recentMSS?.direction === 'BEARISH') {
     shortConfluence += 30;
-    reasons.push('Bearish Market Structure Shift (MSS/CHoCH) confirmed');
+    shortReasons.push('تغییر ساختار بازار نزولی (MSS/CHoCH) تأیید شد');
   } else if (structure.trend === 'BEARISH') {
     shortConfluence += 15;
-    reasons.push('Established Bearish trend structure (Lower Lows & Lower Highs)');
+    shortReasons.push('ساختار روند نزولی تثبیت‌شده (کف‌ها و سقف‌های پایین‌تر)');
   }
   if (mtf.htfTrend === 'BEARISH') {
     shortConfluence += 25;
-    reasons.push('Higher Timeframe alignment bearish across 1D/4H/1H');
+    shortReasons.push('هم‌راستایی نزولی در تایم‌فریم‌های بالای 1D/4H/1H');
   }
   if (volume.imbalance < -10) {
     shortConfluence += 15;
-    reasons.push(`Seller volume dominance (${volume.imbalance}% taker imbalance)`);
+    shortReasons.push(`چیرگی حجم فروشندگان (عدم تعادل تیکر ${volume.imbalance}%)`);
   }
   if (derivatives.oiTrend === 'SHORT_BUILDUP') {
     shortConfluence += 15;
-    reasons.push('Futures Open Interest rising on selloffs (Aggressive Short Buildup)');
+    shortReasons.push('افزایش قراردادهای باز در ریزش‌ها (انباشت تهاجمی شورت)');
   } else if (derivatives.fundingCategory === 'EXTREME_POSITIVE') {
     shortConfluence += 20;
-    reasons.push('Extreme positive funding rate indicates overheated long positioning');
+    shortReasons.push('فاندینگ ریت مثبتِ افراطی، نشان‌دهنده اشباع موقعیت‌های لانگ است');
   }
   if (sessions.judasSwingDetected && sessions.sessions.asian.highSwept) {
     shortConfluence += 20;
-    reasons.push('London Judas Swing swept Asian Session High liquidity');
+    shortReasons.push('سوئینگ جوداس لندن، نقدینگی سقف جلسه آسیا را سوئیپ کرد');
   }
 
   // Decide direction
@@ -226,18 +253,26 @@ export function generateSignal(params: {
     direction = 'NO_SIGNAL';
   }
 
+  // فقط دلایل هم‌جهت با سیگنال نهایی نمایش داده می‌شوند (رفع باگ مخلوط شدن دلایل صعودی/نزولی)
+  const reasons: string[] =
+    direction === 'LONG'
+      ? longReasons
+      : direction === 'SHORT'
+      ? shortReasons
+      : ['هیچ محرک جهت‌داری با هم‌افزایی کافی فعال نیست'];
+
   // Warnings
   if (derivatives.fundingCategory === 'EXTREME_POSITIVE' && direction === 'LONG') {
-    warnings.push('High positive funding rate: long positions carry elevated funding cost');
+    warnings.push('فاندینگ ریت مثبتِ بالا: نگهداری لانگ هزینه فاندینگ سنگینی دارد');
   }
   if (derivatives.positioning === 'EXTREME_LONG' && direction === 'LONG') {
-    warnings.push('Retail long positioning is heavily crowded');
+    warnings.push('موقعیت‌های لانگ معامله‌گران خُرد به‌شدت اشباع شده است');
   }
   if (regime.regime === 'HIGH_VOLATILITY') {
-    warnings.push('High volatility regime: wider stop loss required');
+    warnings.push('رژیم نوسان بالا: حد ضرر وسیع‌تری لازم است');
   }
   if (isStale) {
-    warnings.push('Data stream is delayed; verify price before action');
+    warnings.push('جریان داده دارای تأخیر است؛ پیش از اقدام، قیمت را راستی‌آزمایی کنید');
   }
 
   // Classification
@@ -284,26 +319,26 @@ export function generateSignal(params: {
       const sweepLow = sslSweep?.sweepExtremePrice;
       const recentSwingLow = structure.swingLows.slice(-2).map((s) => s.price);
       const lowestPoint = Math.min(...(sweepLow ? [sweepLow] : []), ...recentSwingLow, currentPrice * 0.985);
-      const stopLoss = parseFloat((lowestPoint * 0.997).toFixed(2));
+      const stopLoss = roundPrice(lowestPoint * 0.997);
       const stopLossPercent = parseFloat((((currentPrice - stopLoss) / currentPrice) * 100).toFixed(2));
 
       // Take Profits
-      const tp1 = parseFloat((currentPrice + (currentPrice - stopLoss) * 1.5).toFixed(2));
-      const tp2 = parseFloat((currentPrice + (currentPrice - stopLoss) * 2.5).toFixed(2));
-      const tp3 = parseFloat((currentPrice + (currentPrice - stopLoss) * 4.0).toFixed(2));
+      const tp1 = roundPrice(currentPrice + (currentPrice - stopLoss) * 1.5);
+      const tp2 = roundPrice(currentPrice + (currentPrice - stopLoss) * 2.5);
+      const tp3 = roundPrice(currentPrice + (currentPrice - stopLoss) * 4.0);
 
       const rrRatio = stopLossPercent > 0 ? parseFloat(((tp1 - currentPrice) / (currentPrice - stopLoss)).toFixed(2)) : 1.5;
 
       tradePlan = {
         entry: {
-          min: parseFloat(entryMin.toFixed(2)),
-          max: parseFloat(entryMax.toFixed(2)),
-          optimal: parseFloat(entryOptimal.toFixed(2)),
+          min: roundPrice(entryMin),
+          max: roundPrice(entryMax),
+          optimal: roundPrice(entryOptimal),
           type: entryType,
         },
         stopLoss,
         stopLossPercent,
-        invalidationReason: `Candle close below structural swing low $${stopLoss.toLocaleString()}`,
+        invalidationReason: `بسته‌شدن کندل زیر کف ساختاری $${roundPrice(stopLoss)}`,
         tp1,
         tp1Percent: parseFloat((((tp1 - currentPrice) / currentPrice) * 100).toFixed(2)),
         tp2,
@@ -337,25 +372,25 @@ export function generateSignal(params: {
       const sweepHigh = bslSweep?.sweepExtremePrice;
       const recentSwingHigh = structure.swingHighs.slice(-2).map((s) => s.price);
       const highestPoint = Math.max(...(sweepHigh ? [sweepHigh] : []), ...recentSwingHigh, currentPrice * 1.015);
-      const stopLoss = parseFloat((highestPoint * 1.003).toFixed(2));
+      const stopLoss = roundPrice(highestPoint * 1.003);
       const stopLossPercent = parseFloat((((stopLoss - currentPrice) / currentPrice) * 100).toFixed(2));
 
-      const tp1 = parseFloat((currentPrice - (stopLoss - currentPrice) * 1.5).toFixed(2));
-      const tp2 = parseFloat((currentPrice - (stopLoss - currentPrice) * 2.5).toFixed(2));
-      const tp3 = parseFloat((currentPrice - (stopLoss - currentPrice) * 4.0).toFixed(2));
+      const tp1 = roundPrice(currentPrice - (stopLoss - currentPrice) * 1.5);
+      const tp2 = roundPrice(currentPrice - (stopLoss - currentPrice) * 2.5);
+      const tp3 = roundPrice(currentPrice - (stopLoss - currentPrice) * 4.0);
 
       const rrRatio = stopLossPercent > 0 ? parseFloat(((currentPrice - tp1) / (stopLoss - currentPrice)).toFixed(2)) : 1.5;
 
       tradePlan = {
         entry: {
-          min: parseFloat(entryMin.toFixed(2)),
-          max: parseFloat(entryMax.toFixed(2)),
-          optimal: parseFloat(entryOptimal.toFixed(2)),
+          min: roundPrice(entryMin),
+          max: roundPrice(entryMax),
+          optimal: roundPrice(entryOptimal),
           type: entryType,
         },
         stopLoss,
         stopLossPercent,
-        invalidationReason: `Candle close above structural swing high $${stopLoss.toLocaleString()}`,
+        invalidationReason: `بسته‌شدن کندل بالای سقف ساختاری $${roundPrice(stopLoss)}`,
         tp1,
         tp1Percent: parseFloat((((currentPrice - tp1) / currentPrice) * 100).toFixed(2)),
         tp2,
@@ -369,7 +404,7 @@ export function generateSignal(params: {
   }
 
   const invalidation =
-    tradePlan?.invalidationReason || 'Market structure invalidation upon key level breach';
+    tradePlan?.invalidationReason || 'بی‌اعتباری ساختار بازار با شکست سطح کلیدی';
 
   return {
     symbol,
@@ -379,7 +414,7 @@ export function generateSignal(params: {
     classification,
     currentPrice,
     tradePlan,
-    reasons: reasons.length > 0 ? reasons : ['No high-confluence directional trigger met'],
+    reasons,
     warnings,
     invalidation,
     marketRegime: regime,

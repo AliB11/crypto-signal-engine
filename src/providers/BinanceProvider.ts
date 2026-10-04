@@ -19,6 +19,15 @@ export class BinanceProvider implements MarketDataProvider {
 
   private cache = new Map<string, CacheEntry<unknown>>();
   private readonly CACHE_TTL_MS = 8000; // 8 seconds cache for hot routes
+  private readonly CACHE_MAX_ENTRIES = 500; // جلوگیری از رشد بی‌حد حافظه نهان
+
+  /** آیا در این نشست به داده شبیه‌سازی‌شده پناه برده شده است؟ */
+  private simulatedFallbackUsed = false;
+
+  /** وضعیت زنده بودن منبع داده را برمی‌گرداند (برای نمایش شفاف در رابط کاربری) */
+  getDataStatus(): { live: boolean } {
+    return { live: !this.simulatedFallbackUsed };
+  }
 
   private async fetchWithRetry<T>(
     urls: string[],
@@ -62,6 +71,18 @@ export class BinanceProvider implements MarketDataProvider {
           }
 
           const json = await response.json();
+          if (this.cache.size >= this.CACHE_MAX_ENTRIES) {
+            // حذف قدیمی‌ترین ورودی برای جلوگیری از نشت حافظه
+            let oldestKey: string | null = null;
+            let oldestAt = Infinity;
+            for (const [key, entry] of this.cache) {
+              if (entry.timestamp < oldestAt) {
+                oldestAt = entry.timestamp;
+                oldestKey = key;
+              }
+            }
+            if (oldestKey) this.cache.delete(oldestKey);
+          }
           this.cache.set(cacheKey, { data: json, timestamp: Date.now() });
           return json as T;
         } catch (err: unknown) {
@@ -114,6 +135,7 @@ export class BinanceProvider implements MarketDataProvider {
       }));
     } catch {
       // Return synthetic realistic data fallback if offline or restricted sandbox IP
+      this.simulatedFallbackUsed = true;
       return this.generateFallbackKlines(formattedSymbol, timeframe, limit);
     }
   }
@@ -147,6 +169,7 @@ export class BinanceProvider implements MarketDataProvider {
         closeTime: data.closeTime,
       };
     } catch {
+      this.simulatedFallbackUsed = true;
       const basePrices: Record<string, number> = {
         BTCUSDT: 96500,
         ETHUSDT: 2750,
@@ -290,9 +313,39 @@ export class BinanceProvider implements MarketDataProvider {
     else if (globalLSR < 0.6 || topPosRatio < 0.5) positioning = 'EXTREME_SHORT';
     else if (globalLSR < 0.85 || topPosRatio < 0.8) positioning = 'SHORT_DOMINANT';
 
-    // Determine OI trend
-    const oiChange1hPercent = 1.25;
-    const oiChange24hPercent = 4.8;
+    // 6. تغییرات واقعی قراردادهای باز از تاریخچه (به‌جای مقادیر ثابت و ساختگی)
+    let oiChange1hPercent = 0;
+    let oiChange24hPercent = 0;
+    try {
+      const oiHist1h = await this.fetchWithRetry<
+        { symbol: string; sumOpenInterest: string; timestamp: number }[]
+      >(
+        [this.baseFuturesUrl],
+        `/futures/data/openInterestHist?symbol=${formattedSymbol}&period=1h&limit=2`
+      ).catch(() => null);
+
+      if (Array.isArray(oiHist1h) && oiHist1h.length >= 2) {
+        const prev = parseFloat(oiHist1h[0].sumOpenInterest);
+        const curr = parseFloat(oiHist1h[oiHist1h.length - 1].sumOpenInterest);
+        if (prev > 0) oiChange1hPercent = parseFloat((((curr - prev) / prev) * 100).toFixed(2));
+      }
+
+      const oiHist24h = await this.fetchWithRetry<
+        { symbol: string; sumOpenInterest: string; timestamp: number }[]
+      >(
+        [this.baseFuturesUrl],
+        `/futures/data/openInterestHist?symbol=${formattedSymbol}&period=4h&limit=7`
+      ).catch(() => null);
+
+      if (Array.isArray(oiHist24h) && oiHist24h.length >= 2) {
+        const prev = parseFloat(oiHist24h[0].sumOpenInterest);
+        const curr = parseFloat(oiHist24h[oiHist24h.length - 1].sumOpenInterest);
+        if (prev > 0) oiChange24hPercent = parseFloat((((curr - prev) / prev) * 100).toFixed(2));
+      }
+    } catch {
+      // در دسترس نبودن تاریخچه → تغییر صفر و روند خنثی (داده ساختگی تزریق نمی‌شود)
+    }
+
     let oiTrend: DerivativesData['oiTrend'] = 'NEUTRAL';
     if (oiChange1hPercent > 1.0) {
       oiTrend = 'LONG_BUILDUP';
@@ -393,7 +446,11 @@ export class BinanceProvider implements MarketDataProvider {
 
       if (Array.isArray(tickers)) {
         const usdtPairs = tickers
-          .filter((t) => t.symbol.endsWith('USDT') && !t.symbol.includes('UP') && !t.symbol.includes('DOWN'))
+          .filter(
+            (t) =>
+              t.symbol.endsWith('USDT') &&
+              !/(UP|DOWN|BULL|BEAR)USDT$/.test(t.symbol) // فقط توکن‌های اهرمی حذف شوند، نه نمادهایی مثل JUP
+          )
           .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
           .map((t) => t.symbol)
           .slice(0, count);
