@@ -41,11 +41,12 @@ A professional-grade, **serverless** cryptocurrency market analysis platform tha
 ### 🧠 Analysis Engines
 
 - **Market Structure**: HH/HL/LH/LL, BOS, CHoCH/MSS, Displacement
-- **Liquidity Layers**: Swing points, EQH/EQL, PDH/PDL, Session sweeps
-- **Volume Profile**: RVOL, spikes, taker imbalance, POC/VAH/VAL
+- **Liquidity Layers**: Swing points, EQH/EQL, PDH/PDL, weekly & session levels
+- **Volume Profile**: RVOL, spikes, taker imbalance, 70% value area (POC/VAH/VAL)
 - **Derivatives**: OI trend, funding rate, Long/Short ratio, taker flow
 - **Multi-Timeframe**: 1D → 4H → 1H → 15m → 5m → 1m confluence
-- **Market Regime**: Trending, Ranging, High-Vol, Contraction
+- **Market Regime**: Wilder ADX(14) + DI dominance + EMA20/50 slope
+- **No Look-Ahead Levels**: every level carries a `confirmedTimestamp`
 
 </td>
 <td width="50%">
@@ -53,8 +54,14 @@ A professional-grade, **serverless** cryptocurrency market analysis platform tha
 ### 📊 Signal Generation
 
 - **Confidence Score**: Weighted 0–100 with 7 configurable components
-- **Directional Classification**: LONG / SHORT / NO TRADE
-- **Trade Plan**: Entry zone, structural SL, TP1/TP2/TP3, RR ratio
+- **Context vs Confidence**: `score` is capped below the threshold when there is
+  no directional setup; raw context quality stays visible as `contextScore`
+- **Directional Classification**: LONG / SHORT / NO TRADE (below-threshold
+  directional setups are downgraded instead of shipping a trade plan)
+- **Draw-on-Liquidity Targets**: TP1/TP2/TP3 are read from the live liquidity
+  map (EQH/EQL, PDH/PDL, weekly & session levels, value-area edges) and each
+  target reports its own source; R-multiples are only the last resort
+- **Trade Plan**: Entry zone, structural SL, risk cap (8%), ATR context
 - **Explainable Reasons**: Checklist of confluence factors per setup
 - **Risk Warnings**: Funding squeeze, crowding, volatility alerts
 - **No Look-Ahead Bias**: Pivots confirmed only at `i + rightBars`
@@ -79,10 +86,15 @@ A professional-grade, **serverless** cryptocurrency market analysis platform tha
 ### 💻 Dashboard
 
 - **Live Scanner Table**: Sort, filter, search, tier switching
-- **TradingView Charts**: Candlestick with overlay controls
-- **60-Second Auto-Refresh**: Countdown timer + manual trigger
+- **Market Pulse Panel**: Aggregate breadth, ADX trend strength, relative
+  volatility and the dominant regime of the whole scan in one view
+- **Signal Lifecycle Tracker**: Every setup is tagged تازه / پایدار ×n /
+  برگشتِ جهت / بازگشت with its age and score delta (localStorage, no server)
+- **Liquidity Magnet Ladder**: Nearest untapped liquidity above/below price
+  with a weighted "draw" direction
+- **TradingView Charts**: Candlestick with overlay controls + data-source badge
+- **60-Second Auto-Refresh**: Countdown timer + manual trigger, alert cooldowns
 - **Signal History**: localStorage watchlist & snapshots
-- **Sound Alerts**: Audio notification for VERY STRONG setups
 - **Mobile Responsive**: Full touch-friendly experience
 
 </td>
@@ -127,6 +139,63 @@ This project was designed with a **strict zero-database constraint**. No Postgre
 
      ✅ No Database  ✅ No Redis  ✅ No KV  ✅ No D1
 ```
+
+---
+
+## Innovations
+
+### 1. Market Pulse (نبض کلان بازار)
+
+Single-symbol analysis cannot answer "which side is the whole market leaning
+to?". The scanner response is aggregated client-side into a weighted breadth
+meter (LONG vs SHORT score weight), the average Wilder ADX, the **median** ATR%
+(so the reading stays meaningful on every timeframe) and a relative
+high-volatility share, plus the dominant regime — finished with a Persian
+one-line interpretation.
+
+### 2. Signal Lifecycle (چرخه عمر سیگنال)
+
+A traditional scanner only ever shows a snapshot, so users cannot tell a
+10-second-old setup from one that has been persisting for half an hour, nor
+whether its direction just flipped. Every scan is compared with the previous
+one and each directional setup is labelled:
+
+| State | Meaning |
+| :---- | :------ |
+| `NEW` | first appearance (or fewer than 3 consecutive scans) |
+| `PERSISTENT` | same direction for 3+ consecutive scans |
+| `FLIPPED` | direction reversed versus the previous scan (previous side kept) |
+| `RESUMED` | setup returned after disappearing from the table |
+
+Age, score delta (▲/▼) and reversal count are shown next to the badge. The map
+lives in `localStorage` (capped at 120 symbols) — the zero-database rule holds.
+
+### 3. Liquidity Magnet Ladder (نردبان مغناطیس نقدینگی)
+
+Shows the nearest untapped liquidity levels above (buy-side) and below
+(sell-side) the current price with their structural strength and distance, and
+computes a **draw direction** where each level is weighted by
+`strength ÷ (1 + distance%)`. This turns "where could price be pulled next?"
+into a readable ladder instead of a hidden assumption, and it is the same map
+that feeds the trade-plan targets.
+
+---
+
+## Data Resilience (zero-dependency)
+
+The engine keeps working — deterministically — when the upstream exchange API
+is unreachable:
+
+| Layer | Behaviour |
+| :---- | :-------- |
+| Short cache | 8 s for market data, 60 s for the ticker universe |
+| Simulated cache | 3 s for fallback payloads (no repeated re-simulation) |
+| Request coalescing | concurrent identical fetches share one upstream call |
+| Circuit breaker | after 2 consecutive failures a host is skipped for 25 s |
+| Timeout & retries | 4 s per attempt, 1 retry per host (was 9 attempts × 6 s) |
+| Deterministic simulation | the same (symbol, timeframe, candle index) always yields the same OHLCV, so consecutive candles never mutate mid-flight |
+| Provenance | every analysis/scanner response carries `dataSource` + `dataQuality` (`live` / `mixed` / `simulated` with a live ratio) |
+| Rate limiting | in-memory token bucket per IP per route, `429` + `Retry-After` |
 
 ---
 

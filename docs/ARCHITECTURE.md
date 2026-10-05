@@ -141,34 +141,64 @@ Priority order for entry identification:
 4. **Structure Retest**: Price retesting broken structure
 
 ### Stop Loss (Structural Invalidation)
-- Placed below/above the swing extreme that forms the structural basis
-- NEVER a fixed percentage (e.g., -1%, -2%)
-- Aligned with the liquidity sweep extreme or recent swing point
+- Anchored to the sweep extreme or the recent structural swing, minus a
+  0.35 × ATR(14) buffer so ordinary noise does not take the trade out
+- Floored at 1.2 × ATR from the entry (never a fixed percentage)
+- Capped: if the structural stop is more than `MAX_RISK_PERCENT` (8%) away,
+  the trade plan is refused and a Persian warning is attached instead
 
-### Take Profits
-- **TP1**: 1.5× risk (conservative structural target)
-- **TP2**: 2.5× risk (opposite liquidity / value area)
-- **TP3**: 4.0× risk (major swing level / PWH/PWL)
+### Take Profits — Draw on Liquidity
+Targets are read from the live liquidity map rather than hardcoded multiples:
+
+1. The map is filtered to levels that are **on the correct side** of the entry,
+   **not yet swept**, and orders them by distance.
+2. TP1 must clear `MIN_TP1_R_MULTIPLE` (1.2× risk) — otherwise the nearest
+   qualifying level is used; TP2/TP3 continue from there.
+3. Every target reports its own source (`targetSources`): EQH/EQL, PDH/PDL,
+   previous-week levels, session extremes, value-area edges (VAH/VAL/POC), or
+   `R_MULTIPLE` when no qualifying level exists.
+4. The ladder is clamped to be strictly monotonic (`TP1 < TP2 < TP3` for longs),
+   so a fallback target can never sit inside an earlier one.
+
+| Component | Meaning |
+| :-------- | :------ |
+| `targetSources` | per-target origin from the liquidity map |
+| `stopLossBasis` | `SWEEP_EXTREME` / `STRUCTURE` / `ATR` / `FALLBACK` |
+| `atrPercent` | ATR(14) at signal time, for position sizing |
 
 ---
 
 ## Data Flow & Caching
 
-### Rate Limit Handling
+### Rate Limit Handling & Resilience
 ```
-Request → Cache Check (8s TTL)
+Request → Cache Check (8s TTL; simulated payloads cached 3s)
     │
-    ├── Cache HIT  → Return cached data
+    ├── Cache HIT            → Return cached data (live or simulated)
+    ├── In-flight duplicate  → Join the existing request (coalescing)
     │
-    └── Cache MISS → Try primary URL
+    └── Cache MISS → Try each Binance host (breakers are skipped)
                          │
-                         ├── 429/418 → Exponential backoff (800ms × 2^attempt)
-                         │              → Try alternate Binance URL
+                         ├── 429/418 → Exponential backoff (800 ms × 2^attempt)
+                         │              → Alternate Binance mirror
                          │
-                         └── Success  → Cache + Return
+                         ├── Success → Cache + Return (counts as a live fetch)
+                         │
+                         └── All hosts failed / breakers open
                                        │
-                                       └── All URLs failed → Fallback to CoinGecko
+                                       └── Deterministic simulation engine
+                                           (reproducible, no network, provenance
+                                            reported via dataSource/dataQuality)
 ```
+
+Circuit breakers open after 2 consecutive failures per host and skip it for 25 s;
+timeouts are 4 s per attempt with a single retry (the previous 3 hosts × 3
+attempts × 6 s could make one analysis take tens of seconds).
+
+### Client-facing rate limits
+Every route applies an in-memory token bucket per IP (scanner 40/min, analyze
+60/min, signals 30/min, backtest 12/min, market data 90/min …) and answers
+`429` with `Retry-After` when the budget is exhausted. No Redis, no database.
 
 ### Concurrency Control
 The scanner processes symbols in batches of 4–5 concurrent requests using `Promise.all` chunking:
@@ -178,6 +208,19 @@ for (let i = 0; i < symbols.length; i += concurrency) {
   const results = await Promise.all(chunk.map(fetchSymbol));
 }
 ```
+
+---
+
+## Explainable Innovations
+
+| Feature | Where | Why it matters |
+| :------ | :---- | :------------- |
+| Market Pulse | scanner tab (`computeMarketPulse`) | Weighted breadth (LONG vs SHORT score mass), average Wilder ADX, **median** ATR% and relative high-volatility share → one honest macro reading per scan |
+| Signal Lifecycle | scanner tab (`updateSignalLifecycle`) | Tags every setup تازه / پایدار ×n / برگشتِ جهت / بازگشت with age and score delta; distinguishes a fresh setup from a stale one that never changes |
+| Liquidity Magnet Ladder | analyzer tab (`selectLiquidityMagnets`) | Nearest untapped levels above/below price with a `strength ÷ (1 + distance%)` draw meter — the same map that feeds trade-plan targets |
+
+All three are pure functions (unit-tested in `tests/features.test.ts`) and run
+entirely in the browser; nothing is persisted server-side.
 
 ---
 

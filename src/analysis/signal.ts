@@ -16,9 +16,11 @@ import {
   SignalComponents,
   SignalWeights,
   TradePlan,
+  TradeTargetSource,
 } from '../types/market';
 import { roundPrice } from '../lib/format';
 import { faLabel, FA_LEVEL_TYPE } from '../lib/i18n';
+import { TIMEFRAME_MS } from '../lib/timeframes';
 
 export const DEFAULT_WEIGHTS: SignalWeights = {
   liquidity: 0.2,
@@ -30,15 +32,154 @@ export const DEFAULT_WEIGHTS: SignalWeights = {
   advancedLayer3: 0.1,
 };
 
-/** مدت هر تایم‌فریم به میلی‌ثانیه */
-const TIMEFRAME_DURATION_MS: Record<Timeframe, number> = {
-  '1m': 60_000,
-  '5m': 300_000,
-  '15m': 900_000,
-  '1h': 3_600_000,
-  '4h': 14_400_000,
-  '1d': 86_400_000,
+/** حداقل امتیاز لازم برای معتبر دانستن یک ستاپ جهت‌دار */
+export const MIN_SIGNAL_SCORE = 50;
+/** حداکثر ریسک قابل قبول (درصد فاصلهٔ حد ضرر از قیمت ورود) */
+const MAX_RISK_PERCENT = 8;
+/** حداقل فاصلهٔ هدف اول از ورود بر حسب ضریب ریسک */
+const MIN_TP1_R_MULTIPLE = 1.2;
+
+/** نرمال‌سازی وزن‌ها تا جمعشان ۱ شود (از صفر شدن تصادفی امتیاز جلوگیری می‌کند) */
+function normalizeWeights(weights: SignalWeights): SignalWeights {
+  const raw: SignalWeights = { ...weights };
+  const keys = Object.keys(raw) as (keyof SignalWeights)[];
+  for (const key of keys) {
+    if (!isFinite(raw[key]) || raw[key] < 0) raw[key] = 0;
+  }
+  const sum = keys.reduce((acc, key) => acc + raw[key], 0);
+  if (sum <= 0) return { ...DEFAULT_WEIGHTS };
+  const normalized = {} as SignalWeights;
+  for (const key of keys) normalized[key] = raw[key] / sum;
+  return normalized;
+}
+
+/** نگاشت نوع سطح نقدینگی به منبع هدف معاملاتی */
+const LEVEL_TO_TARGET_SOURCE: Record<LiquidityLevel['type'], TradeTargetSource> = {
+  SWING_HIGH: 'SWING_HIGH',
+  SWING_LOW: 'SWING_LOW',
+  EQUAL_HIGH: 'EQUAL_HIGH',
+  EQUAL_LOW: 'EQUAL_LOW',
+  PREVIOUS_DAY_HIGH: 'PREVIOUS_DAY_HIGH',
+  PREVIOUS_DAY_LOW: 'PREVIOUS_DAY_LOW',
+  PREVIOUS_WEEK_HIGH: 'PREVIOUS_DAY_HIGH',
+  PREVIOUS_WEEK_LOW: 'PREVIOUS_DAY_LOW',
+  SESSION_HIGH: 'SESSION_HIGH',
+  SESSION_LOW: 'SESSION_LOW',
+  LOCAL_HIGH: 'SWING_HIGH',
+  LOCAL_LOW: 'SWING_LOW',
 };
+
+interface TargetCandidate {
+  price: number;
+  source: TradeTargetSource;
+}
+
+/**
+ * ساخت «نردبان اهداف» از نقشهٔ واقعی نقدینگی (Draw on Liquidity):
+ * سقف‌های نقدینگی، EQH/EQL، PDH/PDL، PWH/PWL، سطوح جلسات و مرزهای پروفایل حجم.
+ * پیش‌تر اهداف تنها ضرایب ثابت ۱.۵/۲.۵/۴ برابر ریسک بودند و به ساختار بازار
+ * هیچ ارتباطی نداشتند.
+ */
+function buildTargetLadder(params: {
+  direction: 'LONG' | 'SHORT';
+  entry: number;
+  risk: number;
+  liquidityLevels: LiquidityLevel[];
+  sessionLevels: LiquidityLevel[];
+  volume: VolumeMetrics;
+}): { tp1: number; tp2: number; tp3: number; sources: TradePlan['targetSources'] } {
+  const { direction, entry, risk, liquidityLevels, sessionLevels, volume } = params;
+
+  const candidates: TargetCandidate[] = [];
+  const availableLevels = [...(liquidityLevels || []), ...(sessionLevels || [])];
+
+  if (direction === 'LONG') {
+    for (const level of availableLevels) {
+      if (level.price > entry * 1.001) {
+        candidates.push({ price: level.price, source: LEVEL_TO_TARGET_SOURCE[level.type] });
+      }
+    }
+    const profile = volume.volumeProfile;
+    if (profile) {
+      if (profile.vah > entry * 1.001) candidates.push({ price: profile.vah, source: 'VOLUME_PROFILE_VAH' });
+      if (profile.poc > entry * 1.001) candidates.push({ price: profile.poc, source: 'VOLUME_PROFILE_POC' });
+    }
+  } else {
+    for (const level of availableLevels) {
+      if (level.price < entry * 0.999) {
+        candidates.push({ price: level.price, source: LEVEL_TO_TARGET_SOURCE[level.type] });
+      }
+    }
+    const profile = volume.volumeProfile;
+    if (profile) {
+      if (profile.val < entry * 0.999) candidates.push({ price: profile.val, source: 'VOLUME_PROFILE_VAL' });
+      if (profile.poc < entry * 0.999) candidates.push({ price: profile.poc, source: 'VOLUME_PROFILE_POC' });
+    }
+  }
+
+  // مرتب‌سازی از نزدیک‌ترین به دورترین + حذف اهداف هم‌مکان
+  candidates.sort((a, b) => (direction === 'LONG' ? a.price - b.price : b.price - a.price));
+  const unique: TargetCandidate[] = [];
+  for (const candidate of candidates) {
+    const isDuplicate = unique.some(
+      (u) => Math.abs(u.price - candidate.price) / Math.max(candidate.price, 1e-9) < 0.0015
+    );
+    if (!isDuplicate) unique.push(candidate);
+  }
+
+  const picks: { price: number; source: TradeTargetSource }[] = [];
+  let cursor = direction === 'LONG' ? entry + risk * MIN_TP1_R_MULTIPLE : entry - risk * MIN_TP1_R_MULTIPLE;
+
+  for (let i = 0; i < 3; i++) {
+    const found = unique.find((c) =>
+      direction === 'LONG' ? c.price >= cursor * 1.0005 : c.price <= cursor * 0.9995
+    );
+
+    if (found) {
+      picks.push({ price: found.price, source: found.source });
+      cursor = direction === 'LONG' ? found.price * 1.004 : found.price * 0.996;
+    } else {
+      // در نبود سطح نقدینگی معتبر، هدف پشتیبان «بیرون از آخرین هدف» ساخته می‌شود
+      // تا نردبان اهداف همیشه صعودی/نزولی بماند.
+      // (نسخهٔ نخست این پشتیبان را با ضریب ثابت از قیمت ورود می‌ساخت و هدف سوم
+      //  می‌توانست به سمت اشتباه نردبان بیفتد.)
+      const anchor = picks.length > 0 ? picks[picks.length - 1].price : entry;
+      const step = Math.max(
+        risk * (picks.length === 0 ? MIN_TP1_R_MULTIPLE : 0.9),
+        Math.abs(anchor - entry) * 0.1
+      );
+      const desired = direction === 'LONG' ? anchor + step : anchor - step;
+      // هدف پشتیبان هرگز نباید از آستانهٔ جست‌وجو (cursor) عقب‌تر باشد
+      const price = direction === 'LONG' ? Math.max(desired, cursor) : Math.min(desired, cursor);
+      picks.push({ price, source: 'R_MULTIPLE' });
+      cursor = direction === 'LONG' ? price * 1.004 : price * 0.996;
+    }
+  }
+
+  // تضمین یکنواختی نردبان: TP1 < TP2 < TP3 برای لانگ و TP1 > TP2 > TP3 برای شورت
+  for (let i = 1; i < picks.length; i++) {
+    const previous = picks[i - 1].price;
+    const current = picks[i].price;
+    const minimumStep = Math.max(risk * 0.5, previous * 0.001);
+    if (direction === 'LONG' ? current <= previous : current >= previous) {
+      picks[i] = {
+        price: direction === 'LONG' ? previous + minimumStep : previous - minimumStep,
+        source: picks[i].source === 'R_MULTIPLE' ? 'R_MULTIPLE' : picks[i].source,
+      };
+    }
+  }
+
+  return {
+    tp1: roundPrice(picks[0].price),
+    tp2: roundPrice(picks[1].price),
+    tp3: roundPrice(picks[2].price),
+    sources: {
+      tp1: picks[0].source,
+      tp2: picks[1].source,
+      tp3: picks[2].source,
+    },
+  };
+}
 
 export function generateSignal(params: {
   symbol: string;
@@ -59,7 +200,9 @@ export function generateSignal(params: {
     symbol,
     timeframe,
     klines,
-    sweeps,
+    // مقادیر پیش‌فرض تدافعی: فراخوانی ناقص نباید کل تحلیل را با استثنا متوقف کند
+    liquidityLevels = [],
+    sweeps = [],
     structure,
     sessions,
     volume,
@@ -69,27 +212,24 @@ export function generateSignal(params: {
     layer3,
   } = params;
 
-  const w: SignalWeights = { ...DEFAULT_WEIGHTS, ...(params.weights || {}) };
+  const w = normalizeWeights({ ...DEFAULT_WEIGHTS, ...(params.weights || {}) });
   const lastKline = klines[klines.length - 1];
   const currentPrice = lastKline?.close || 0;
   const dataTimestamp = lastKline?.timestamp || Date.now();
   const analysisTimestamp = Date.now();
 
   // تشخیص کهنگی داده: معیار، زمانِ انتظار برای بسته‌شدن آخرین کندل است (نه زمان باز شدن آن).
-  // در داده زنده بایننس آخرین کندل در حال تشکیل است و closeTime آن در آینده قرار دارد،
-  // بنابراین هشدار کهنگی فقط وقتی فعال می‌شود که داده واقعاً قدیمی باشد.
   const expectedCloseTime = lastKline
-    ? lastKline.closeTime || lastKline.timestamp + TIMEFRAME_DURATION_MS[timeframe]
+    ? lastKline.closeTime || lastKline.timestamp + TIMEFRAME_MS[timeframe]
     : Date.now();
   const isStale = Date.now() - expectedCloseTime > 180_000;
 
-  // دلایل صعودی و نزولی جدا نگهداری می‌شوند تا فقط دلایل هم‌جهت با سیگنال نهایی نمایش داده شوند
   const longReasons: string[] = [];
   const shortReasons: string[] = [];
   const warnings: string[] = [];
 
-  // 1. Calculate Component Scores
-  // A. Liquidity Component (0-100)
+  // ۱. امتیاز اجزای تحلیل
+  // A. نقدینگی
   let liqScore = 40;
   const recentSweeps = sweeps.slice(-3);
   const sslSweep = recentSweeps.find((s) => s.type === 'SELL_SIDE_SWEEP');
@@ -102,7 +242,7 @@ export function generateSignal(params: {
   if (layer3.layer1BasicLiquidity.score >= 70) liqScore += 10;
   liqScore = Math.min(100, liqScore);
 
-  // B. Market Structure Component (0-100)
+  // B. ساختار بازار
   let msScore = 40;
   if (structure.trend !== 'RANGING') msScore += 20;
   if (structure.recentMSS) msScore += 25;
@@ -110,38 +250,42 @@ export function generateSignal(params: {
   if (structure.displacementDetected) msScore += 15;
   msScore = Math.min(100, msScore);
 
-  // C. MTF Component (0-100)
+  // C. هم‌راستایی چندتایم‌فریم
   const mtfScore = mtf.alignmentScore;
 
-  // D. Session Liquidity Component (0-100)
+  // D. نقدینگی جلسات
   let sessScore = 50;
   if (sessions.judasSwingDetected) sessScore += 30;
   if (sessions.nyReversalDetected) sessScore += 30;
   if (sessions.sessions.asian.highSwept || sessions.sessions.asian.lowSwept) sessScore += 15;
   sessScore = Math.min(100, sessScore);
 
-  // E. Volume Component (0-100)
+  // E. حجم
   let volScore = 50;
   if (volume.state === 'EXPANSION') volScore += 25;
   if (volume.isSpike) volScore += 20;
   if (Math.abs(volume.imbalance) > 15) volScore += 15;
   volScore = Math.min(100, volScore);
 
-  // F. Derivatives Component (0-100)
+  // F. مشتقات
   let derivScore = 50;
-  if (derivatives.oiTrend === 'LONG_BUILDUP' || derivatives.oiTrend === 'SHORT_BUILDUP') {
-    derivScore += 25;
-  }
+  if (derivatives.oiTrend === 'LONG_BUILDUP' || derivatives.oiTrend === 'SHORT_BUILDUP') derivScore += 25;
   if (derivatives.fundingCategory === 'EXTREME_NEGATIVE' || derivatives.fundingCategory === 'EXTREME_POSITIVE') {
     derivScore += 20;
   }
-  if (derivatives.positioning === 'EXTREME_SHORT' || derivatives.positioning === 'EXTREME_LONG') {
-    derivScore += 15;
-  }
+  if (derivatives.positioning === 'EXTREME_SHORT' || derivatives.positioning === 'EXTREME_LONG') derivScore += 15;
   derivScore = Math.min(100, derivScore);
 
-  // G. Layer 3 Score
-  const l3Score = layer3.totalLayer3Score;
+  // اگر دادهٔ مشتقات از موتور شبیه‌سازی آمده باشد (نبود شبکه/API آتی)، نباید در
+  // امتیاز اثر بگذارد؛ وگرنه روند OIِ ساختگی می‌تواند «اطمینان کاذب» بسازد.
+  // در این حالت مؤلفه خنثی (۵۰) گزارش و وزنش میان سایر مؤلفه‌ها بازتوزیع می‌شود.
+  const derivativesLive = derivatives.isSimulated !== true;
+  const derivativesComponent = derivativesLive ? derivScore : 50;
+  const otherWeightTotal =
+    w.liquidity + w.marketStructure + w.multiTimeframe + w.sessionLiquidity + w.volume + w.advancedLayer3;
+  const weightScale =
+    !derivativesLive && otherWeightTotal > 0 ? (otherWeightTotal + w.derivatives) / otherWeightTotal : 1;
+  const others = (weight: number) => (derivativesLive ? weight : weight * weightScale);
 
   const components: SignalComponents = {
     liquidity: liqScore,
@@ -149,28 +293,26 @@ export function generateSignal(params: {
     multiTimeframe: mtfScore,
     sessionLiquidity: sessScore,
     volume: volScore,
-    derivatives: derivScore,
-    advancedLayer3: l3Score,
+    derivatives: derivativesComponent,
+    advancedLayer3: layer3.totalLayer3Score,
   };
 
-  // Weighted total score
   const rawScore =
-    components.liquidity * w.liquidity +
-    components.marketStructure * w.marketStructure +
-    components.multiTimeframe * w.multiTimeframe +
-    components.sessionLiquidity * w.sessionLiquidity +
-    components.volume * w.volume +
-    components.derivatives * w.derivatives +
-    components.advancedLayer3 * w.advancedLayer3;
+    components.liquidity * others(w.liquidity) +
+    components.marketStructure * others(w.marketStructure) +
+    components.multiTimeframe * others(w.multiTimeframe) +
+    components.sessionLiquidity * others(w.sessionLiquidity) +
+    components.volume * others(w.volume) +
+    components.derivatives * (derivativesLive ? w.derivatives : 0) +
+    components.advancedLayer3 * others(w.advancedLayer3);
 
-  const score = Math.max(0, Math.min(100, Math.round(rawScore)));
+  const contextScore = Math.max(0, Math.min(100, Math.round(rawScore)));
 
-  // Determine Direction
+  // ۲. تعیین جهت بر پایهٔ هم‌افزایی محرک‌ها
   let direction: SignalDirection = 'NO_SIGNAL';
   let longConfluence = 0;
   let shortConfluence = 0;
 
-  // Bullish signals
   if (sslSweep) {
     longConfluence += 35;
     longReasons.push(
@@ -179,7 +321,7 @@ export function generateSignal(params: {
   }
   if (structure.recentMSS?.direction === 'BULLISH') {
     longConfluence += 30;
-    longReasons.push('تغییر ساختار بازار صعودی (MSS/CHoCH) تأیید شد');
+    longReasons.push('تغییر ساختار بازار صعودی (MSS/CHoCH) به‌تازگی تأیید شد');
   } else if (structure.trend === 'BULLISH') {
     longConfluence += 15;
     longReasons.push('ساختار روند صعودی تثبیت‌شده (سقف‌ها و کف‌های بالاتر)');
@@ -207,10 +349,9 @@ export function generateSignal(params: {
   }
   if (sessions.judasSwingDetected && sessions.sessions.asian.lowSwept) {
     longConfluence += 20;
-    longReasons.push('سوئینگ جوداس لندن، نقدینگی کف جلسه آسیا را سوئیپ کرد');
+    longReasons.push('سوئینگ جوداس لندن، نقدینگی کف جلسهٔ آسیا را سوئیپ کرد');
   }
 
-  // Bearish signals
   if (bslSweep) {
     shortConfluence += 35;
     shortReasons.push(
@@ -219,7 +360,7 @@ export function generateSignal(params: {
   }
   if (structure.recentMSS?.direction === 'BEARISH') {
     shortConfluence += 30;
-    shortReasons.push('تغییر ساختار بازار نزولی (MSS/CHoCH) تأیید شد');
+    shortReasons.push('تغییر ساختار بازار نزولی (MSS/CHoCH) به‌تازگی تأیید شد');
   } else if (structure.trend === 'BEARISH') {
     shortConfluence += 15;
     shortReasons.push('ساختار روند نزولی تثبیت‌شده (کف‌ها و سقف‌های پایین‌تر)');
@@ -227,6 +368,10 @@ export function generateSignal(params: {
   if (mtf.htfTrend === 'BEARISH') {
     shortConfluence += 25;
     shortReasons.push('هم‌راستایی نزولی در تایم‌فریم‌های بالای 1D/4H/1H');
+  }
+  if (structure.displacementDetected && structure.recentMSS?.direction === 'BEARISH') {
+    shortConfluence += 15;
+    shortReasons.push('دیسپلیسمنت نزولی، فشار فروش را تأیید می‌کند');
   }
   if (volume.imbalance < -10) {
     shortConfluence += 15;
@@ -237,33 +382,49 @@ export function generateSignal(params: {
     shortReasons.push('افزایش قراردادهای باز در ریزش‌ها (انباشت تهاجمی شورت)');
   } else if (derivatives.fundingCategory === 'EXTREME_POSITIVE') {
     shortConfluence += 20;
-    shortReasons.push('فاندینگ ریت مثبتِ افراطی، نشان‌دهنده اشباع موقعیت‌های لانگ است');
+    shortReasons.push('فاندینگ ریت مثبتِ افراطی، نشان‌دهندهٔ اشباع موقعیت‌های لانگ است');
   }
   if (sessions.judasSwingDetected && sessions.sessions.asian.highSwept) {
     shortConfluence += 20;
-    shortReasons.push('سوئینگ جوداس لندن، نقدینگی سقف جلسه آسیا را سوئیپ کرد');
+    shortReasons.push('سوئینگ جوداس لندن، نقدینگی سقف جلسهٔ آسیا را سوئیپ کرد');
   }
 
-  // Decide direction
   if (longConfluence >= 55 && longConfluence > shortConfluence + 15) {
     direction = 'LONG';
   } else if (shortConfluence >= 55 && shortConfluence > longConfluence + 15) {
     direction = 'SHORT';
-  } else {
+  }
+
+  // امتیاز نهایی: در نبود ستاپ جهت‌دار، امتیاز «اطمینان» نباید بالا نمایش داده شود؛
+  // کیفیت زمینهٔ بازار جداگانه در contextScore گزارش می‌شود.
+  // (پیش‌تر ردیف‌هایی با جهت NO_SIGNAL اما امتیاز ۸۱ در جدول دیده می‌شد.)
+  // (ترتیب نسبی داخل ردیف‌های بدون ستاپ حفظ می‌شود تا شدت هم‌افزایی هم دیده شود.)
+  const score =
+    direction === 'NO_SIGNAL'
+      ? Math.min(MIN_SIGNAL_SCORE - 1, Math.round(contextScore * 0.6))
+      : contextScore;
+
+  // دروازهٔ کیفیت: ستاپ جهت‌دار با امتیاز پایین «سیگنال» نیست.
+  // پیش‌تر می‌شد سیگنالی با طبقه‌بندی NO_SIGNAL اما به‌همراه برنامهٔ معاملهٔ کامل دریافت کرد.
+  if (direction !== 'NO_SIGNAL' && score < MIN_SIGNAL_SCORE) {
+    warnings.push(
+      `هم‌افزایی جهت‌دار شناسایی شد اما امتیاز کیفیت (${score}) کمتر از آستانهٔ ${MIN_SIGNAL_SCORE} است؛ ستاپ معتبر تلقی نشد.`
+    );
     direction = 'NO_SIGNAL';
   }
 
-  // فقط دلایل هم‌جهت با سیگنال نهایی نمایش داده می‌شوند (رفع باگ مخلوط شدن دلایل صعودی/نزولی)
   const reasons: string[] =
     direction === 'LONG'
       ? longReasons
       : direction === 'SHORT'
       ? shortReasons
+      : longConfluence >= 55 || shortConfluence >= 55
+      ? ['محرک‌های جهت‌دار متقابل یکدیگر را خنثی کرده‌اند؛ چیدمان پرنوسان و بی‌سوگیری است']
       : ['هیچ محرک جهت‌داری با هم‌افزایی کافی فعال نیست'];
 
-  // Warnings
+  // ۳. هشدارهای ریسک
   if (derivatives.fundingCategory === 'EXTREME_POSITIVE' && direction === 'LONG') {
-    warnings.push('فاندینگ ریت مثبتِ بالا: نگهداری لانگ هزینه فاندینگ سنگینی دارد');
+    warnings.push('فاندینگ ریت مثبتِ بالا: نگهداری لانگ هزینهٔ فاندینگ سنگینی دارد');
   }
   if (derivatives.positioning === 'EXTREME_LONG' && direction === 'LONG') {
     warnings.push('موقعیت‌های لانگ معامله‌گران خُرد به‌شدت اشباع شده است');
@@ -271,13 +432,19 @@ export function generateSignal(params: {
   if (regime.regime === 'HIGH_VOLATILITY') {
     warnings.push('رژیم نوسان بالا: حد ضرر وسیع‌تری لازم است');
   }
+  if (regime.regime === 'CONTRACTION' && direction !== 'NO_SIGNAL') {
+    warnings.push('بازار در فشردگی است؛ احتمال شکست جعلی پیش از حرکت اصلی بالاست');
+  }
+  if (derivatives.isSimulated) {
+    warnings.push('دادهٔ مشتقات (OI/فاندینگ) در دسترس نبود و از موتور شبیه‌سازی قطعی آمده است');
+  }
   if (isStale) {
     warnings.push('جریان داده دارای تأخیر است؛ پیش از اقدام، قیمت را راستی‌آزمایی کنید');
   }
 
-  // Classification
+  // ۴. طبقه‌بندی
   let classification: SignalClassification = 'NO_SIGNAL';
-  if (direction === 'NO_SIGNAL' || score < 50) {
+  if (direction === 'NO_SIGNAL' || score < MIN_SIGNAL_SCORE) {
     classification = 'NO_SIGNAL';
   } else if (score < 65) {
     classification = 'WEAK';
@@ -289,45 +456,100 @@ export function generateSignal(params: {
     classification = 'VERY_STRONG';
   }
 
-  // Calculate Trade Plan
+  // ۵. برنامهٔ معاملاتی
   let tradePlan: TradePlan | null = null;
+  const atr = regime.atr > 0 ? regime.atr : currentPrice * 0.004;
 
   if (direction !== 'NO_SIGNAL' && currentPrice > 0) {
-    if (direction === 'LONG') {
-      // Entry: Look for FVG, OB, or liquidity reclaim
-      const activeBullishFVG = structure.fvgs.find((f) => f.direction === 'BULLISH' && !f.filled);
-      const activeBullishOB = structure.orderBlocks.find((o) => o.direction === 'BULLISH' && !o.mitigated);
+    const isLong = direction === 'LONG';
+    const activeFVG = structure.fvgs.find((f) => f.direction === (isLong ? 'BULLISH' : 'BEARISH') && !f.filled);
+    const activeOB = structure.orderBlocks.find(
+      (o) => o.direction === (isLong ? 'BULLISH' : 'BEARISH') && !o.mitigated
+    );
 
-      let entryMin = currentPrice * 0.996;
-      let entryMax = currentPrice * 1.002;
-      let entryOptimal = currentPrice;
-      let entryType: TradePlan['entry']['type'] = 'LIQUIDITY_RECLAIM';
+    let entryMin = isLong ? currentPrice * 0.996 : currentPrice * 0.998;
+    let entryMax = isLong ? currentPrice * 1.002 : currentPrice * 1.004;
+    let entryOptimal = currentPrice;
+    let entryType: TradePlan['entry']['type'] = 'LIQUIDITY_RECLAIM';
 
-      if (activeBullishFVG && activeBullishFVG.bottom < currentPrice) {
-        entryMin = activeBullishFVG.bottom;
-        entryMax = Math.min(currentPrice, activeBullishFVG.top);
-        entryOptimal = activeBullishFVG.midpoint;
-        entryType = 'FVG';
-      } else if (activeBullishOB && activeBullishOB.bottom < currentPrice) {
-        entryMin = activeBullishOB.bottom;
-        entryMax = Math.min(currentPrice, activeBullishOB.top);
-        entryOptimal = (activeBullishOB.top + activeBullishOB.bottom) / 2;
-        entryType = 'ORDER_BLOCK';
-      }
+    if (isLong && activeFVG && activeFVG.bottom < currentPrice) {
+      entryMin = activeFVG.bottom;
+      entryMax = Math.min(currentPrice, activeFVG.top);
+      entryOptimal = activeFVG.midpoint;
+      entryType = 'FVG';
+    } else if (isLong && activeOB && activeOB.bottom < currentPrice) {
+      entryMin = activeOB.bottom;
+      entryMax = Math.min(currentPrice, activeOB.top);
+      entryOptimal = (activeOB.top + activeOB.bottom) / 2;
+      entryType = 'ORDER_BLOCK';
+    } else if (!isLong && activeFVG && activeFVG.top > currentPrice) {
+      entryMin = Math.max(currentPrice, activeFVG.bottom);
+      entryMax = activeFVG.top;
+      entryOptimal = activeFVG.midpoint;
+      entryType = 'FVG';
+    } else if (!isLong && activeOB && activeOB.top > currentPrice) {
+      entryMin = Math.max(currentPrice, activeOB.bottom);
+      entryMax = activeOB.top;
+      entryOptimal = (activeOB.top + activeOB.bottom) / 2;
+      entryType = 'ORDER_BLOCK';
+    }
 
-      // Stop Loss: Below structural swing low or sweep extreme
-      const sweepLow = sslSweep?.sweepExtremePrice;
-      const recentSwingLow = structure.swingLows.slice(-2).map((s) => s.price);
-      const lowestPoint = Math.min(...(sweepLow ? [sweepLow] : []), ...recentSwingLow, currentPrice * 0.985);
-      const stopLoss = roundPrice(lowestPoint * 0.997);
-      const stopLossPercent = parseFloat((((currentPrice - stopLoss) / currentPrice) * 100).toFixed(2));
+    // نقطهٔ ابطال ساختاری: اگر سوئیپ تازه رخ داده باشد، اکستریم همان سوئیپ معتبرترین
+    // حد ضرر است؛ در غیر این صورت آخرین کف/سقف نوسانی تأییدشده.
+    // (نسخهٔ قبلی کمینه/بیشینهٔ «دو کف آخر» را می‌گرفت که می‌توانست حد ضرر را
+    //  بی‌دلیل به یک کف دورافتاده و قدیمی بچسباند.)
+    const lastSwingLow = structure.swingLows[structure.swingLows.length - 1]?.price;
+    const lastSwingHigh = structure.swingHighs[structure.swingHighs.length - 1]?.price;
+    const structuralAnchor = isLong
+      ? sslSweep?.sweepExtremePrice ?? lastSwingLow ?? currentPrice * 0.992
+      : bslSweep?.sweepExtremePrice ?? lastSwingHigh ?? currentPrice * 1.008;
 
-      // Take Profits
-      const tp1 = roundPrice(currentPrice + (currentPrice - stopLoss) * 1.5);
-      const tp2 = roundPrice(currentPrice + (currentPrice - stopLoss) * 2.5);
-      const tp3 = roundPrice(currentPrice + (currentPrice - stopLoss) * 4.0);
+    // حد ضرر = ساختار + نوسان:
+    //   • فاصلهٔ حداقل ۱.۲ برابر ATR از ورود (تا نویز معمول بازار باعث استاپ نشود)
+    //   • و یک بافر کوچک (۰.۳۵ ATR) فراتر از سطح ساختاری
+    const atrStopDistance = Math.max(atr * 1.2, currentPrice * 0.005);
+    let stopLoss: number;
+    let stopLossBasis: TradePlan['stopLossBasis'];
 
-      const rrRatio = stopLossPercent > 0 ? parseFloat(((tp1 - currentPrice) / (currentPrice - stopLoss)).toFixed(2)) : 1.5;
+    if (isLong) {
+      const structuralStop = structuralAnchor - atr * 0.35;
+      stopLoss = Math.min(structuralStop, currentPrice - atrStopDistance * 0.35);
+      stopLossBasis = sslSweep ? 'SWEEP_EXTREME' : lastSwingLow ? 'STRUCTURE' : 'ATR';
+    } else {
+      const structuralStop = structuralAnchor + atr * 0.35;
+      stopLoss = Math.max(structuralStop, currentPrice + atrStopDistance * 0.35);
+      stopLossBasis = bslSweep ? 'SWEEP_EXTREME' : lastSwingHigh ? 'STRUCTURE' : 'ATR';
+    }
+
+    stopLoss = roundPrice(stopLoss);
+    let stopLossPercent = parseFloat((((isLong ? currentPrice - stopLoss : stopLoss - currentPrice) / currentPrice) * 100).toFixed(2));
+
+    // اندازهٔ ریسک نباید بی‌معنا کوچک یا بیش از حد بزرگ باشد
+    if (stopLossPercent < 0.2) {
+      stopLoss = roundPrice(isLong ? currentPrice - atrStopDistance : currentPrice + atrStopDistance);
+      stopLossPercent = parseFloat((((isLong ? currentPrice - stopLoss : stopLoss - currentPrice) / currentPrice) * 100).toFixed(2));
+      stopLossBasis = 'ATR';
+    }
+
+    if (stopLossPercent > MAX_RISK_PERCENT) {
+      warnings.push(
+        `فاصلهٔ حد ضرر ساختاری (${stopLossPercent}٪) از سقف ریسک مجاز (${MAX_RISK_PERCENT}٪) بیشتر است؛ برنامهٔ معامله صادر نشد.`
+      );
+    } else if (stopLoss > 0) {
+      const risk = isLong ? currentPrice - stopLoss : stopLoss - currentPrice;
+      const ladder = buildTargetLadder({
+        direction: isLong ? 'LONG' : 'SHORT',
+        entry: currentPrice,
+        risk,
+        liquidityLevels,
+        sessionLevels: sessions.keyLevels,
+        volume,
+      });
+
+      const pct = (target: number) =>
+        parseFloat((((isLong ? target - currentPrice : currentPrice - target) / currentPrice) * 100).toFixed(2));
+
+      const rrRatio = risk > 0 ? parseFloat(((isLong ? ladder.tp1 - currentPrice : currentPrice - ladder.tp1) / risk).toFixed(2)) : 0;
 
       tradePlan = {
         entry: {
@@ -338,79 +560,48 @@ export function generateSignal(params: {
         },
         stopLoss,
         stopLossPercent,
-        invalidationReason: `بسته‌شدن کندل زیر کف ساختاری $${roundPrice(stopLoss)}`,
-        tp1,
-        tp1Percent: parseFloat((((tp1 - currentPrice) / currentPrice) * 100).toFixed(2)),
-        tp2,
-        tp2Percent: parseFloat((((tp2 - currentPrice) / currentPrice) * 100).toFixed(2)),
-        tp3,
-        tp3Percent: parseFloat((((tp3 - currentPrice) / currentPrice) * 100).toFixed(2)),
-        rrRatio,
+        invalidationReason: isLong
+          ? `بسته‌شدن کندل زیر کف ساختاری $${roundPrice(stopLoss)}`
+          : `بسته‌شدن کندل بالای سقف ساختاری $${roundPrice(stopLoss)}`,
+        tp1: ladder.tp1,
+        tp1Percent: pct(ladder.tp1),
+        tp2: ladder.tp2,
+        tp2Percent: pct(ladder.tp2),
+        tp3: ladder.tp3,
+        tp3Percent: pct(ladder.tp3),
+        rrRatio: rrRatio > 0 ? rrRatio : 1.5,
         riskLevel: stopLossPercent < 1.5 ? 'LOW' : stopLossPercent < 3.0 ? 'MEDIUM' : 'HIGH',
-      };
-    } else if (direction === 'SHORT') {
-      const activeBearishFVG = structure.fvgs.find((f) => f.direction === 'BEARISH' && !f.filled);
-      const activeBearishOB = structure.orderBlocks.find((o) => o.direction === 'BEARISH' && !o.mitigated);
-
-      let entryMin = currentPrice * 0.998;
-      let entryMax = currentPrice * 1.004;
-      let entryOptimal = currentPrice;
-      let entryType: TradePlan['entry']['type'] = 'LIQUIDITY_RECLAIM';
-
-      if (activeBearishFVG && activeBearishFVG.top > currentPrice) {
-        entryMin = Math.max(currentPrice, activeBearishFVG.bottom);
-        entryMax = activeBearishFVG.top;
-        entryOptimal = activeBearishFVG.midpoint;
-        entryType = 'FVG';
-      } else if (activeBearishOB && activeBearishOB.top > currentPrice) {
-        entryMin = Math.max(currentPrice, activeBearishOB.bottom);
-        entryMax = activeBearishOB.top;
-        entryOptimal = (activeBearishOB.top + activeBearishOB.bottom) / 2;
-        entryType = 'ORDER_BLOCK';
-      }
-
-      const sweepHigh = bslSweep?.sweepExtremePrice;
-      const recentSwingHigh = structure.swingHighs.slice(-2).map((s) => s.price);
-      const highestPoint = Math.max(...(sweepHigh ? [sweepHigh] : []), ...recentSwingHigh, currentPrice * 1.015);
-      const stopLoss = roundPrice(highestPoint * 1.003);
-      const stopLossPercent = parseFloat((((stopLoss - currentPrice) / currentPrice) * 100).toFixed(2));
-
-      const tp1 = roundPrice(currentPrice - (stopLoss - currentPrice) * 1.5);
-      const tp2 = roundPrice(currentPrice - (stopLoss - currentPrice) * 2.5);
-      const tp3 = roundPrice(currentPrice - (stopLoss - currentPrice) * 4.0);
-
-      const rrRatio = stopLossPercent > 0 ? parseFloat(((currentPrice - tp1) / (stopLoss - currentPrice)).toFixed(2)) : 1.5;
-
-      tradePlan = {
-        entry: {
-          min: roundPrice(entryMin),
-          max: roundPrice(entryMax),
-          optimal: roundPrice(entryOptimal),
-          type: entryType,
-        },
-        stopLoss,
-        stopLossPercent,
-        invalidationReason: `بسته‌شدن کندل بالای سقف ساختاری $${roundPrice(stopLoss)}`,
-        tp1,
-        tp1Percent: parseFloat((((currentPrice - tp1) / currentPrice) * 100).toFixed(2)),
-        tp2,
-        tp2Percent: parseFloat((((currentPrice - tp2) / currentPrice) * 100).toFixed(2)),
-        tp3,
-        tp3Percent: parseFloat((((currentPrice - tp3) / currentPrice) * 100).toFixed(2)),
-        rrRatio,
-        riskLevel: stopLossPercent < 1.5 ? 'LOW' : stopLossPercent < 3.0 ? 'MEDIUM' : 'HIGH',
+        targetSources: ladder.sources,
+        atrPercent: regime.atrPercent,
+        stopLossBasis,
       };
     }
   }
 
-  const invalidation =
-    tradePlan?.invalidationReason || 'بی‌اعتباری ساختار بازار با شکست سطح کلیدی';
+  if (tradePlan) {
+    // دلایل و آرایهٔ reasons هم‌مرجع هستند، بنابراین این توضیح در خروجی دیده می‌شود
+    const sourceLabel = (source: TradeTargetSource): string =>
+      source === 'R_MULTIPLE'
+        ? 'ضریب ریسک استاندارد'
+        : source.startsWith('VOLUME_PROFILE')
+        ? 'پروفایل حجم'
+        : faLabel(FA_LEVEL_TYPE, source);
+    const directionalReasons = direction === 'LONG' ? longReasons : shortReasons;
+    directionalReasons.push(
+      `اهداف سود از نقشهٔ نقدینگی استخراج شد (هدف اول روی ${sourceLabel(
+        tradePlan.targetSources?.tp1 || 'R_MULTIPLE'
+      )})`
+    );
+  }
+
+  const invalidation = tradePlan?.invalidationReason || 'بی‌اعتباری ساختار بازار با شکست سطح کلیدی';
 
   return {
     symbol,
     timeframe,
     direction,
     score,
+    contextScore,
     classification,
     currentPrice,
     tradePlan,

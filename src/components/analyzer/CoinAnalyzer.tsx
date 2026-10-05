@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { FullAnalysisResult, Timeframe } from '@/types/market';
 import { TradingViewChart } from '../charts/TradingViewChart';
+import { LiquidityMagnetLadder } from './LiquidityMagnetLadder';
 import {
   TrendingUp,
   TrendingDown,
@@ -20,6 +21,8 @@ import { formatPrice, formatSignedPercent } from '@/lib/format';
 import {
   faCoinName,
   faLabel,
+  FA_TARGET_SOURCE,
+  FA_STOP_BASIS,
   FA_ENTRY_TYPE,
   FA_OI_TREND,
   FA_REGIME,
@@ -77,6 +80,14 @@ export const CoinAnalyzer: React.FC<Props> = ({
       `✅ هدف ۲: ${formatPrice(tradePlan.tp2)} (+${tradePlan.tp2Percent}%)`,
       `✅ هدف ۳: ${formatPrice(tradePlan.tp3)} (+${tradePlan.tp3Percent}%)`,
       `⚖️ ریسک به ریوارد: 1:${tradePlan.rrRatio} | ریسک: ${faLabel(FA_RISK_LEVEL, tradePlan.riskLevel)}`,
+      ...(tradePlan.targetSources
+        ? [
+            `🧭 منابع اهداف: ${faLabel(FA_TARGET_SOURCE, tradePlan.targetSources.tp1)} / ${faLabel(
+              FA_TARGET_SOURCE,
+              tradePlan.targetSources.tp2
+            )} / ${faLabel(FA_TARGET_SOURCE, tradePlan.targetSources.tp3)}`,
+          ]
+        : []),
       ``,
       `دلایل:`,
       ...signal.reasons.map((r) => `• ${r}`),
@@ -179,6 +190,16 @@ export const CoinAnalyzer: React.FC<Props> = ({
             >
               {signal.score}/100
             </span>
+            {signal.direction === 'NO_SIGNAL' &&
+              typeof signal.contextScore === 'number' &&
+              signal.contextScore > signal.score && (
+                <span
+                  className="text-[10px] text-slate-400 font-medium"
+                  title="کیفیت زمینهٔ بازار (مستقل از وجود ستاپ جهت‌دار)"
+                >
+                  زمینه: <span className="num">{signal.contextScore}</span>
+                </span>
+              )}
           </div>
         </div>
       </div>
@@ -206,6 +227,7 @@ export const CoinAnalyzer: React.FC<Props> = ({
             tradePlan={tradePlan}
             timeframe={timeframe}
             symbol={symbol}
+            dataSource={analysis.dataSource === 'simulated' ? 'simulated' : 'live'}
           />
         </div>
 
@@ -279,9 +301,24 @@ export const CoinAnalyzer: React.FC<Props> = ({
                 {/* اهداف سود */}
                 <div className="grid grid-cols-3 gap-2">
                   {[
-                    { label: 'هدف ۱', price: tradePlan.tp1, pct: tradePlan.tp1Percent },
-                    { label: 'هدف ۲', price: tradePlan.tp2, pct: tradePlan.tp2Percent },
-                    { label: 'هدف ۳', price: tradePlan.tp3, pct: tradePlan.tp3Percent },
+                    {
+                      label: 'هدف ۱',
+                      price: tradePlan.tp1,
+                      pct: tradePlan.tp1Percent,
+                      source: tradePlan.targetSources?.tp1,
+                    },
+                    {
+                      label: 'هدف ۲',
+                      price: tradePlan.tp2,
+                      pct: tradePlan.tp2Percent,
+                      source: tradePlan.targetSources?.tp2,
+                    },
+                    {
+                      label: 'هدف ۳',
+                      price: tradePlan.tp3,
+                      pct: tradePlan.tp3Percent,
+                      source: tradePlan.targetSources?.tp3,
+                    },
                   ].map((tp) => (
                     <div key={tp.label} className="p-2 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-center">
                       <span className="text-[10px] text-slate-400 font-semibold block">{tp.label}</span>
@@ -289,14 +326,33 @@ export const CoinAnalyzer: React.FC<Props> = ({
                         {formatPrice(tp.price)}
                       </span>
                       <span className="text-[10px] text-emerald-300 font-mono num">+{tp.pct}%</span>
+                      {tp.source && (
+                        <span className="text-[9px] text-emerald-200/70 block mt-0.5" title="منبع این هدف در نقشه نقدینگی">
+                          {faLabel(FA_TARGET_SOURCE, tp.source)}
+                        </span>
+                      )}
                     </div>
                   ))}
                 </div>
 
-                {/* ریسک به ریوارد */}
-                <div className="flex items-center justify-between p-2 bg-slate-950 rounded-lg border border-slate-800 font-mono">
-                  <span className="text-slate-400 text-[11px] font-sans">ریسک به ریوارد محاسبه‌شده:</span>
-                  <span className="font-bold text-cyan-400 text-sm num">1:{tradePlan.rrRatio}</span>
+                {/* ریسک به ریوارد + مبنای حد ضرر و نوسان */}
+                <div className="flex flex-col gap-1.5 p-2 bg-slate-950 rounded-lg border border-slate-800 font-mono">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400 text-[11px] font-sans">ریسک به ریوارد محاسبه‌شده:</span>
+                    <span className="font-bold text-cyan-400 text-sm num">1:{tradePlan.rrRatio}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="text-slate-500 font-sans">مبنای حد ضرر:</span>
+                    <span className="text-slate-300 font-sans">
+                      {faLabel(FA_STOP_BASIS, tradePlan.stopLossBasis)}
+                    </span>
+                  </div>
+                  {typeof tradePlan.atrPercent === 'number' && (
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="text-slate-500 font-sans">نوسان ATR (۱۴ دوره):</span>
+                      <span className="text-slate-300 num">{tradePlan.atrPercent}%</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* دلیل بی‌اعتباری */}
@@ -346,6 +402,14 @@ export const CoinAnalyzer: React.FC<Props> = ({
           </div>
         </div>
       </div>
+
+      {/* نردبان مغناطیس نقدینگی — نزدیک‌ترین سطوح دست‌نخوردهٔ بالا و پایین قیمت */}
+      {analysis.liquidityLevels && analysis.liquidityLevels.length > 0 && (
+        <LiquidityMagnetLadder
+          levels={analysis.liquidityLevels}
+          currentPrice={analysis.signal.currentPrice || analysis.ticker?.lastPrice || 0}
+        />
+      )}
 
       {/* تفکیک سه‌لایه نقدینگی پیشرفته */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

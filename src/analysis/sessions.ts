@@ -1,8 +1,22 @@
 import { Kline, SessionInfo, SessionLiquiditySummary, LiquidityLevel } from '../types/market';
 
+/**
+ * تحلیل نقدینگی جلسات معاملاتی (آسیا / لندن / نیویورک)
+ *
+ * اصلاحات این نسخه:
+ *  ۱) اولویت جلسهٔ جاری: در بازهٔ هم‌پوشانی ۱۳:۰۰–۱۵:۰۰ UTC پیش‌تر «لندن» گزارش می‌شد،
+ *     حالا آخرین جلسهٔ آغازشده (نیویورک) جلسهٔ جاری است و فهرست کامل جلسات فعال هم برگردانده می‌شود.
+ *  ۲) سطوح کلیدی جلسهٔ نیویورک نیز تولید می‌شود (پیش‌تر فقط آسیا و لندن بودند).
+ *  ۳) زمان سطوح جلسه، «پایان همان جلسه» است نه زمان آخرین کندل؛ در غیر این صورت موتور
+ *     سوئیپ هرگز نمی‌توانست سقف/کف جلسات را به‌عنوان سطح قابل سوئیپ ببیند.
+ */
 export function analyzeSessionLiquidity(klines: Kline[]): SessionLiquiditySummary {
   if (!klines || klines.length === 0) {
-    const emptySession = (name: 'Asian' | 'London' | 'New York', start: number, end: number): SessionInfo => ({
+    const emptySession = (
+      name: 'Asian' | 'London' | 'New York',
+      start: number,
+      end: number
+    ): SessionInfo => ({
       name,
       isActive: false,
       startHourUTC: start,
@@ -18,6 +32,7 @@ export function analyzeSessionLiquidity(klines: Kline[]): SessionLiquiditySummar
 
     return {
       currentSession: 'Between Sessions',
+      activeSessions: [],
       sessions: {
         asian: emptySession('Asian', 0, 8),
         london: emptySession('London', 7, 15),
@@ -33,20 +48,15 @@ export function analyzeSessionLiquidity(klines: Kline[]): SessionLiquiditySummar
   const currentHourUTC = new Date(latestTime).getUTCHours();
   const currentPrice = klines[klines.length - 1].close;
 
-  // Find candles belonging to the most recent 24h
+  // کندل‌های ۲۴ ساعت گذشته
   const oneDayAgo = latestTime - 24 * 60 * 60 * 1000;
   const recent24h = klines.filter((k) => k.timestamp >= oneDayAgo);
 
-  const getSessionCandles = (startHour: number, endHour: number): Kline[] => {
-    return recent24h.filter((k) => {
+  const getSessionCandles = (startHour: number, endHour: number): Kline[] =>
+    recent24h.filter((k) => {
       const h = new Date(k.timestamp).getUTCHours();
-      if (startHour < endHour) {
-        return h >= startHour && h < endHour;
-      } else {
-        return h >= startHour || h < endHour;
-      }
+      return startHour < endHour ? h >= startHour && h < endHour : h >= startHour || h < endHour;
     });
-  };
 
   const buildSession = (
     name: 'Asian' | 'London' | 'New York',
@@ -72,6 +82,7 @@ export function analyzeSessionLiquidity(klines: Kline[]): SessionLiquiditySummar
         highSwept: false,
         lowSwept: false,
         bias: 'NEUTRAL',
+        endTimestamp: latestTime,
       };
     }
 
@@ -81,7 +92,6 @@ export function analyzeSessionLiquidity(klines: Kline[]): SessionLiquiditySummar
     const closePrice = candles[candles.length - 1].close;
     const rangePercent = low > 0 ? ((high - low) / low) * 100 : 0;
 
-    // Check if subsequent candles swept this session's high or low
     const sessionEndTime = candles[candles.length - 1].timestamp;
     const subsequentCandles = klines.filter((k) => k.timestamp > sessionEndTime);
 
@@ -104,6 +114,7 @@ export function analyzeSessionLiquidity(klines: Kline[]): SessionLiquiditySummar
       highSwept,
       lowSwept,
       bias,
+      endTimestamp: sessionEndTime,
     };
   };
 
@@ -111,67 +122,61 @@ export function analyzeSessionLiquidity(klines: Kline[]): SessionLiquiditySummar
   const london = buildSession('London', 7, 15);
   const newYork = buildSession('New York', 13, 21);
 
-  // Current session name
+  // اولویت جلسهٔ جاری: آخرین جلسه‌ای که شروع شده است (نیویورک > لندن > آسیا)
+  type NamedSession = 'Asian' | 'London' | 'New York';
+  const activeSessions: NamedSession[] = [];
+  if (asian.isActive) activeSessions.push('Asian');
+  if (london.isActive) activeSessions.push('London');
+  if (newYork.isActive) activeSessions.push('New York');
+
   let currentSession: SessionLiquiditySummary['currentSession'] = 'Between Sessions';
-  if (asian.isActive) currentSession = 'Asian';
+  if (newYork.isActive) currentSession = 'New York';
   else if (london.isActive) currentSession = 'London';
-  else if (newYork.isActive) currentSession = 'New York';
+  else if (asian.isActive) currentSession = 'Asian';
 
-  // Judas Swing: London sweeping Asian High or Asian Low
-  const judasSwingDetected =
-    london.isActive && (asian.highSwept || asian.lowSwept);
+  // جوداس سوئینگ: سوئیپ سقف یا کف جلسهٔ آسیا در جلسهٔ لندن
+  const judasSwingDetected = london.isActive && (asian.highSwept || asian.lowSwept);
 
-  // NY Reversal: NY sweeping London High or London Low
-  const nyReversalDetected =
-    newYork.isActive && (london.highSwept || london.lowSwept);
+  // بازگشت نیویورک: سوئیپ سقف یا کف جلسهٔ لندن
+  const nyReversalDetected = newYork.isActive && (london.highSwept || london.lowSwept);
 
-  // Session liquidity levels
   const keyLevels: LiquidityLevel[] = [];
-  if (asian.high > 0) {
-    keyLevels.push({
-      price: asian.high,
-      type: 'SESSION_HIGH',
-      strength: 85,
-      swept: asian.highSwept,
-      distancePercent: parseFloat((((asian.high - currentPrice) / currentPrice) * 100).toFixed(2)),
-      timestamp: latestTime,
-    });
-    keyLevels.push({
-      price: asian.low,
-      type: 'SESSION_LOW',
-      strength: 85,
-      swept: asian.lowSwept,
-      distancePercent: parseFloat((((asian.low - currentPrice) / currentPrice) * 100).toFixed(2)),
-      timestamp: latestTime,
-    });
-  }
+  const pushSessionLevels = (
+    session: SessionInfo,
+    strength: number
+  ): void => {
+    if (session.high <= 0 || session.low <= 0) return;
+    const anchorTime = session.endTimestamp ?? latestTime;
 
-  if (london.high > 0) {
     keyLevels.push({
-      price: london.high,
+      price: session.high,
       type: 'SESSION_HIGH',
-      strength: 88,
-      swept: london.highSwept,
-      distancePercent: parseFloat((((london.high - currentPrice) / currentPrice) * 100).toFixed(2)),
-      timestamp: latestTime,
+      strength,
+      swept: session.highSwept,
+      distancePercent: parseFloat((((session.high - currentPrice) / currentPrice) * 100).toFixed(2)),
+      timestamp: anchorTime,
+      confirmedTimestamp: anchorTime,
     });
+
     keyLevels.push({
-      price: london.low,
+      price: session.low,
       type: 'SESSION_LOW',
-      strength: 88,
-      swept: london.lowSwept,
-      distancePercent: parseFloat((((london.low - currentPrice) / currentPrice) * 100).toFixed(2)),
-      timestamp: latestTime,
+      strength,
+      swept: session.lowSwept,
+      distancePercent: parseFloat((((session.low - currentPrice) / currentPrice) * 100).toFixed(2)),
+      timestamp: anchorTime,
+      confirmedTimestamp: anchorTime,
     });
-  }
+  };
+
+  pushSessionLevels(asian, 85);
+  pushSessionLevels(london, 88);
+  pushSessionLevels(newYork, 88);
 
   return {
     currentSession,
-    sessions: {
-      asian,
-      london,
-      newYork,
-    },
+    activeSessions,
+    sessions: { asian, london, newYork },
     judasSwingDetected,
     nyReversalDetected,
     keyLevels,

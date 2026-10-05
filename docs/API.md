@@ -20,13 +20,38 @@ Returns the service status. No database required.
   "ok": true,
   "status": "healthy",
   "service": "crypto-advanced-signal-scanner",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "mode": "serverless-memory",
   "primaryProvider": "binance-public",
-  "fallbackProvider": "coingecko",
+  "metadataFallback": "coingecko",
+  "dataFallback": "deterministic-simulation",
+  "dataStatus": {
+    "live": true,
+    "liveFetches": 128,
+    "simulatedFetches": 0,
+    "cacheHits": 74,
+    "liveCacheHits": 74,
+    "simulatedCacheHits": 0,
+    "coalescedRequests": 21,
+    "breakerTrips": 0,
+    "openBreakers": [],
+    "lastError": null,
+    "lastLiveAt": "2025-01-15T11:59:58.000Z",
+    "lastSimulatedAt": null
+  },
+  "warnings": [],
   "timestamp": "2025-01-15T12:00:00.000Z"
 }
 ```
+
+**Status values:**
+
+| `status`   | Meaning                                                                 |
+| :--------- | :---------------------------------------------------------------------- |
+| `healthy`  | API عمومی بایننس در دسترس است                                         |
+| `degraded` | دسترسی به بایننس برقرار نیست و خروجی‌ها از موتور شبیه‌سازی قطعی می‌آیند |
+
+`dataStatus.openBreakers` میزبان‌هایی را نشان می‌دهد که قطع‌کنندهٔ مدارشان (circuit breaker) پس از خطاهای پیاپی باز شده است و موقتاً نادیده گرفته می‌شوند.
 
 ---
 
@@ -85,6 +110,8 @@ Performs complete multi-timeframe Layer 3 analysis for a symbol.
 | :------- | :----- | :--------- | :------------------------------------- |
 | `symbol` | string | `BTCUSDT`  | Trading pair symbol                    |
 | `tf`     | string | `15m`      | Primary timeframe (`1m`,`5m`,`15m`,`1h`,`4h`,`1d`) |
+| `limit`  | number | `200`      | تعداد کندل‌ها (۶۰ تا ۱۰۰۰)              |
+| `weights`| JSON   | default    | وزن‌های سفارشی مؤلفه‌های امتیازدهی      |
 
 **Example:**
 ```
@@ -103,6 +130,7 @@ GET /api/analyze?symbol=BTCUSDT&tf=15m
     "timeframe": "15m",
     "direction": "LONG",
     "score": 87,
+    "contextScore": 87,
     "classification": "VERY_STRONG",
     "currentPrice": 96500,
     "tradePlan": {
@@ -122,7 +150,14 @@ GET /api/analyze?symbol=BTCUSDT&tf=15m
       "tp3": 106500,
       "tp3Percent": 10.36,
       "rrRatio": 1.5,
-      "riskLevel": "MEDIUM"
+      "riskLevel": "MEDIUM",
+      "targetSources": {
+        "tp1": "SWING_HIGH",
+        "tp2": "EQUAL_HIGH",
+        "tp3": "PREVIOUS_DAY_HIGH"
+      },
+      "atrPercent": 0.47,
+      "stopLossBasis": "SWEEP_EXTREME"
     },
     "reasons": [
       "Sell-side liquidity sweep executed at $95,200 (SWING_LOW)",
@@ -166,9 +201,29 @@ GET /api/analyze?symbol=BTCUSDT&tf=15m
   "layer3": { /* layer 3 analysis */ },
   "candles": [ /* array of klines */ ],
   "dataTimestamp": 1705312800000,
-  "analysisTimestamp": 1705312805000
+  "analysisTimestamp": 1705312805000,
+  "dataSource": "live",
+  "dataQuality": {
+    "source": "live",
+    "liveRatio": 1,
+    "liveFetches": 8,
+    "simulatedFetches": 0,
+    "message": "داده‌های این تحلیل مستقیماً از API عمومی بایننس خوانده شده‌اند."
+  },
+  "durationMs": 842
 }
 ```
+
+### Trade plan fields
+
+| Field               | Description                                                                                     |
+| :------------------ | :---------------------------------------------------------------------------------------------- |
+| `targetSources`     | منبع هر هدف در نقشهٔ نقدینگی (`SWING_HIGH`, `EQUAL_HIGH`, `PREVIOUS_DAY_HIGH`, `VOLUME_PROFILE_VAH`, `R_MULTIPLE` …) |
+| `atrPercent`        | نوسان ATR(14) در لحظهٔ صدور سیگنال (درصد)                                                        |
+| `stopLossBasis`     | مبنای حد ضرر: `SWEEP_EXTREME` / `STRUCTURE` / `ATR`                                              |
+| `rrRatio`           | نسبت ریوارد به ریسک هدف اول (هدف اول حداقل ۱.۲ برابر ریسک فاصله دارد)                             |
+
+> **قاعدهٔ صدور برنامهٔ معامله:** اگر فاصلهٔ حد ضرر ساختاری از سقف ریسک مجاز (۸٪) بیشتر شود، برنامهٔ معامله صادر نمی‌شود و هشدار فارسی در `warnings` قرار می‌گیرد. همچنین ستاپی که امتیازش کمتر از ۵۰ باشد، `NO_SIGNAL` گزارش می‌شود (بدون برنامهٔ معامله).
 
 ---
 
@@ -257,10 +312,16 @@ GET /api/scanner?symbols=BTCUSDT,ETHUSDT,SOLUSDT&tf=1h
     "longs": 3,
     "shorts": 1,
     "noSignal": 6,
-    "strongOrBetter": 2
-  }
+    "strongOrBetter": 2,
+    "failed": 0
+  },
+  "dataSource": "live",
+  "failedSymbols": [],
+  "durationMs": 290
 }
 ```
+
+> در پاسخ اسکنر، برای هر نماد بدون ستاپ جهت‌دار، فیلد `contextScore` کیفیت «زمینهٔ بازار» را جدا از `score` نشان می‌دهد. `score` ردیف‌های `NO_SIGNAL` عمداً زیر آستانه (حداکثر ۴۹) نگه داشته می‌شود تا با ستاپ‌های واقعی اشتباه نشود، در حالی که `contextScore` می‌تواند بالا باشد (مثلاً ۸۱ یعنی هم‌افزایی خوب ولی بدون شکست ساختار جهت‌دار).
 
 ---
 
@@ -393,7 +454,7 @@ Returns engine configuration, scoring weights, and system parameters.
 **Response:**
 ```json
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "weights": {
     "liquidity": 0.2,
     "marketStructure": 0.2,
@@ -516,11 +577,84 @@ All endpoints return consistent error structures:
 
 ---
 
+## Data Quality
+
+Every analysis/scanner response carries an explicit data-provenance block so the UI (and any API consumer) can tell live data from simulated data:
+
+```json
+{
+  "dataSource": "simulated",
+  "dataQuality": {
+    "source": "simulated",
+    "liveRatio": 0,
+    "liveFetches": 0,
+    "simulatedFetches": 8,
+    "message": "دسترسی به بایننس برقرار نشد؛ همهٔ داده‌های این تحلیل از موتور شبیه‌سازی قطعی آمده‌اند و برای معاملهٔ واقعی مناسب نیستند."
+  }
+}
+```
+
+| Field              | Description                                                            |
+| :----------------- | :--------------------------------------------------------------------- |
+| `source`           | `live` (فقط دادهٔ زنده)، `mixed` (ترکیبی)، `simulated` (شبیه‌سازی کامل) |
+| `liveRatio`        | نسبت فراخوانی‌های زندهٔ موفق در همین درخواست (۰ تا ۱)                  |
+| `liveFetches`      | تعداد فراخوانی‌های زندهٔ موفق در همین درخواست                          |
+| `simulatedFetches` | تعداد افت‌ها به موتور شبیه‌سازی در همین درخواست                        |
+
+> دادهٔ شبیه‌سازی‌شده **قطعی و بازتولیدپذیر** است: قیمت هر کندل تابعی از (نماد، زمان) است، بنابراین کندل‌های بسته‌شده با گذر زمان تغییر نمی‌کنند و کندل‌های ۱m/۱۵m/۱h/۱d یک نماد همه از یک منحنی قیمت مشترک نمونه‌برداری می‌شوند.
+
+---
+
+## Detection Invariants (anti-look-ahead)
+
+موتور تحلیل هیچ‌گاه از داده‌ای که در لحظهٔ ارزیابی «هنوز تأیید نشده» استفاده نمی‌کند:
+
+- **سطوح نقدینگی حساس به زمان تأییدند:** یک سقف/کف برابر (EQH/EQL) تنها از کندل‌هایی ساخته می‌شود که در زمان `confirmedTimestamp` تأیید شده‌اند؛ در کندل‌های میانی (پنجرهٔ تأیید) نباید سطح شکسته شده باشد.
+- **جاروکشی (sweep) تنها پس از عبور قیمت از سطح و بازگشت بسته‌شدن به سمت دیگر آن ثبت می‌شود** و فقط ۴۰ کندل آخر بررسی می‌شود.
+- **بک‌تست بدون سوگیری نگاه به آینده:** در هر کندل فقط داده‌های تا همان کندل به موتور داده می‌شود؛ خروجی معاملات با فرض «حد ضرر قبل از هدف در کندل‌های مبهم» محاسبه می‌شود.
+
+---
+
 ## Rate Limiting
 
-The server does not impose client-side rate limits. However, Binance public APIs have rate limits (~1200 requests/minute for spot). The system handles this automatically with:
+All endpoints are protected by an in-memory token-bucket limiter (no database, no Redis). When the budget is exhausted the API answers `429` with a `Retry-After` header:
 
-- **8-second in-memory cache** on hot routes
-- **Exponential backoff** on 429 responses
+| Endpoint         | Default budget (per IP) |
+| :--------------- | :---------------------- |
+| `/api/scanner`   | 40 / minute             |
+| `/api/analyze`   | 60 / minute             |
+| `/api/signals`   | 30 / minute             |
+| `/api/liquidity` | 60 / minute             |
+| `/api/structure` | 60 / minute             |
+| `/api/derivatives` | 60 / minute           |
+| `/api/market`    | 90 / minute             |
+| `/api/backtest`  | 12 / minute             |
+
+```json
+{
+  "error": "تعداد درخواست‌ها بیش از حد مجاز است؛ لطفاً چند لحظه بعد تلاش کنید.",
+  "status": "RATE_LIMITED",
+  "retryAfterSeconds": 4
+}
+```
+
+Upstream protection layers:
+
+- **8-second in-memory cache** on hot routes (60 s for the ticker universe)
+- **In-flight request coalescing** — concurrent identical requests share one upstream call
+- **Circuit breaker per host** — after 2 consecutive failures a host is skipped for 25 s
+- **Exponential backoff** on 429/418 responses
 - **Alternate URL rotation** across Binance mirrors
+
+---
+
+## Input Validation
+
+| Parameter   | Rule                                                                 |
+| :---------- | :------------------------------------------------------------------- |
+| `symbol`    | فقط `A-Z0-9`، طول ۳ تا ۲۰؛ در غیر این صورت `BTCUSDT`                  |
+| `tf`        | یکی از `1m,5m,15m,1h,4h,1d`؛ در غیر این صورت `15m`                   |
+| `limit`     | `analyze`: ۶۰–۱۰۰۰ (پیش‌فرض ۲۰۰)، `backtest`: ۱۰۰–۱۵۰۰ (پیش‌فرض ۵۰۰) |
+| `symbols`   | حداکثر ۶۰ نماد (scanner) / ۲۰ نماد (signals)                          |
+| `weights`   | هر مؤلفه ۰ تا ۱؛ وزن‌ها پیش از امتیازدهی نرمال می‌شوند               |
 - **Controlled concurrency** (4–5 parallel requests in scanner)

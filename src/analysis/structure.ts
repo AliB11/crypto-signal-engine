@@ -304,8 +304,12 @@ export function analyzeMarketStructure(
   else if (bearishCount >= 3) trend = 'BEARISH';
   else trend = currentTrend;
 
-  const recentMSS = events.filter((e) => e.type === 'MSS').pop() || null;
-  const recentBOS = events.filter((e) => e.type === 'BOS').pop() || null;
+  // «تازگی» رویداد ساختاری: رویدادی که ده‌ها کندل پیش رخ داده، محرک معتبر امروز نیست.
+  // پیش‌تر رویداد MSS قدیمی (حتی ۱۰۰ کندل قبل) امتیاز کامل محرک را می‌گرفت.
+  const recencyWindow = Math.max(10, Math.min(30, Math.floor(klines.length * 0.2)));
+  const recentEventsWindow = events.filter((e) => e.candleIndex >= klines.length - recencyWindow);
+  const recentMSS = recentEventsWindow.filter((e) => e.type === 'MSS').pop() || null;
+  const recentBOS = recentEventsWindow.filter((e) => e.type === 'BOS').pop() || null;
 
   // Recent displacement check (last 5 candles)
   const recentDisplacement = klines.slice(-5).some((k) => {
@@ -313,14 +317,35 @@ export function analyzeMarketStructure(
     return b >= avgBody * 1.6 && k.volume >= avgVol * 1.25;
   });
 
+  // فقط FVG های «فعال» (پرشدنشده) نگه داشته می‌شوند؛ پیش‌تر برش سادهٔ `.slice(-8)`
+  // می‌توانست گپ‌های پرشده را حفظ کند و گپ فعال قدیمی‌تر را دور بریزد — و به همین دلیل
+  // موتور سیگنال گاهی «گپ فعالی» پیدا نمی‌کرد که واقعاً وجود داشت.
+  const activeFvgs = fvgs
+    .filter((f) => !f.filled)
+    .slice(-10)
+    .sort((a, b) => a.candleIndex - b.candleIndex);
+  const filledFvgs = fvgs
+    .filter((f) => f.filled)
+    .slice(-2)
+    .sort((a, b) => a.candleIndex - b.candleIndex);
+
+  const activeOBs = orderBlocks
+    .filter((o) => !o.mitigated)
+    .slice(-6)
+    .sort((a, b) => a.candleIndex - b.candleIndex);
+  const mitigatedOBs = orderBlocks
+    .filter((o) => o.mitigated)
+    .slice(-2)
+    .sort((a, b) => a.candleIndex - b.candleIndex);
+
   return {
     trend,
     lastEvent: events[events.length - 1] || null,
     events,
     swingHighs,
     swingLows,
-    fvgs: fvgs.slice(-8), // Keep relevant active FVGs
-    orderBlocks: orderBlocks.slice(-6), // Keep active OBs
+    fvgs: [...activeFvgs, ...filledFvgs],
+    orderBlocks: [...activeOBs, ...mitigatedOBs],
     displacementDetected: recentDisplacement,
     recentMSS,
     recentBOS,

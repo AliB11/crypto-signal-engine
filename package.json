@@ -1,7 +1,7 @@
 {
   "name": "crypto-signal-scanner",
-  "version": "1.0.0",
-  "description": "Serverless, zero-database crypto market scanner with Multi-Timeframe Structure Analysis, Liquidity Layer 3 Engine, Derivatives Flow, and Context-Aware Signal Generation.",
+  "version": "1.1.0",
+  "description": "Serverless, zero-database crypto market scanner with Multi-Timeframe Structure Analysis, Liquidity Layer 3 Engine, Derivatives Flow, Draw-on-Liquidity trade plans and data-integrity safeguards.",
   "private": true,
   "license": "MIT",
   "author": "Crypto Signal Scanner Contributors",

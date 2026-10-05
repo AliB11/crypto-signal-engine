@@ -41,11 +41,16 @@ export function analyzeVolume(klines: Kline[], binCount = 40): VolumeMetrics {
   }
 
   // Taker buy/sell volume analysis
+  // اگر منبع داده ستون حجم تیکر نداشته باشد (مثلاً CoinGecko)، نسبت‌ها باید خنثی
+  // گزارش شوند و پرچم hasTickFlowData نباید true باشد.
+  const hasTickFlowData = klines.some((k) => (k.takerBuyBaseVolume || 0) > 0);
   let totalTakerBuy = 0;
   let totalVol = 0;
   const takerLookback = Math.min(30, klines.length);
   for (let i = klines.length - takerLookback; i < klines.length; i++) {
-    totalTakerBuy += klines[i].takerBuyBaseVolume || klines[i].volume * 0.5;
+    totalTakerBuy += hasTickFlowData
+      ? klines[i].takerBuyBaseVolume
+      : klines[i].volume * 0.5;
     totalVol += klines[i].volume;
   }
   const totalTakerSell = Math.max(0, totalVol - totalTakerBuy);
@@ -116,21 +121,30 @@ export function analyzeVolume(klines: Kline[], binCount = 40): VolumeMetrics {
       }
     }
 
-    // Value Area: 70% volume around POC
+    // Value Area: گسترش از POC به سمت همسایهٔ پرحجم‌تر تا پوشش ۷۰٪ حجم
+    // (روش قبلی بین‌های پرحجم پراکنده را انتخاب می‌کرد و VAH/VAL می‌توانست
+    // محدوده‌ای غیرپیوسته و نادرست بسازد.)
     const targetValueAreaVol = totalProfileVolume * 0.7;
-    const sortedBins = [...bins].sort((a, b) => b.volume - a.volume);
-    let accumulatedVol = 0;
-    const valueAreaBins: VolumeProfileNode[] = [];
+    const pocIndex = bins.indexOf(pocBin);
+    let lowerIdx = pocIndex;
+    let upperIdx = pocIndex;
+    let accumulatedVol = bins[pocIndex].volume;
 
-    for (const bin of sortedBins) {
-      accumulatedVol += bin.volume;
-      valueAreaBins.push(bin);
-      if (accumulatedVol >= targetValueAreaVol) break;
+    while (accumulatedVol < targetValueAreaVol && (lowerIdx > 0 || upperIdx < binCount - 1)) {
+      const belowVol = lowerIdx > 0 ? bins[lowerIdx - 1].volume : -1;
+      const aboveVol = upperIdx < binCount - 1 ? bins[upperIdx + 1].volume : -1;
+
+      if (aboveVol >= belowVol) {
+        upperIdx += 1;
+        accumulatedVol += bins[upperIdx].volume;
+      } else {
+        lowerIdx -= 1;
+        accumulatedVol += bins[lowerIdx].volume;
+      }
     }
 
-    const vaPrices = valueAreaBins.map((b) => b.price);
-    const vah = Math.max(...vaPrices);
-    const val = Math.min(...vaPrices);
+    const vah = bins[upperIdx].price;
+    const val = bins[lowerIdx].price;
 
     // HVN (High Volume Nodes) & LVN (Low Volume Nodes)
     const avgBinVol = totalProfileVolume / binCount;
@@ -159,6 +173,6 @@ export function analyzeVolume(klines: Kline[], binCount = 40): VolumeMetrics {
     takerSellRatio,
     imbalance,
     volumeProfile,
-    hasTickFlowData: true,
+    hasTickFlowData,
   };
 }

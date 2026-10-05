@@ -1,7 +1,13 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Signal, FullAnalysisResult, Timeframe, SignalWeights } from '@/types/market';
+import {
+  Signal,
+  FullAnalysisResult,
+  Timeframe,
+  SignalWeights,
+  DataQualityInfo,
+} from '@/types/market';
 import { DEFAULT_WEIGHTS } from '@/analysis/signal';
 import { Header } from '@/components/layout/Header';
 import { ScannerTable } from '@/components/scanner/ScannerTable';
@@ -9,10 +15,17 @@ import { CoinAnalyzer } from '@/components/analyzer/CoinAnalyzer';
 import { BacktestDashboard } from '@/components/backtester/BacktestDashboard';
 import { SignalHistory } from '@/components/history/SignalHistory';
 import { SettingsModal } from '@/components/settings/SettingsModal';
-import { AlertCircle, ShieldCheck, BellRing, X } from 'lucide-react';
+import { AlertCircle, ShieldCheck, BellRing, X, AlertTriangle } from 'lucide-react';
 import { faLabel, FA_CLASSIFICATION } from '@/lib/i18n';
+import { SignalLifecycleMap, updateSignalLifecycle } from '@/lib/signal-lifecycle';
 
 const SCAN_INTERVAL_SECONDS = 60;
+/** فاصلهٔ حداقلی بین دو هشدار صوتی/توست برای همان نماد و جهت */
+const ALERT_COOLDOWN_MS = 15 * 60_000;
+/** فاصلهٔ حداقلی بین دو عکس لحظه‌ای از همان نماد در تاریخچهٔ محلی */
+const HISTORY_DEDUPE_MS = 30 * 60_000;
+/** کلید حافظهٔ محلی ردیاب چرخهٔ عمر سیگنال‌ها (تازه/پایدار/برگشتی) */
+const LIFECYCLE_STORAGE_KEY = 'crypto_signal_lifecycle_v1';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'scanner' | 'analyzer' | 'backtest' | 'history'>('scanner');
@@ -32,11 +45,18 @@ export default function Home() {
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [dataSource, setDataSource] = useState<'live' | 'simulated'>('live');
+  const [dataQuality, setDataQuality] = useState<DataQualityInfo | null>(null);
+  const [scanErrors, setScanErrors] = useState<{ symbol: string; message: string }[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+  const [lifecycle, setLifecycle] = useState<SignalLifecycleMap>({});
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isScanningRef = useRef(false);
+  /** زمان آخرین هشدار برای هر «نماد + جهت» تا از هشدار تکراری هر دقیقه جلوگیری شود */
+  const alertHistoryRef = useRef<Map<string, number>>(new Map());
+  /** آخرین نقشهٔ چرخهٔ عمر سیگنال‌ها — برای مقایسه با اسکن تازه */
+  const lifecycleRef = useRef<SignalLifecycleMap>({});
 
   // بارگذاری علاقه‌مندی‌ها و وزن‌ها از حافظه محلی
   useEffect(() => {
@@ -45,6 +65,15 @@ export default function Home() {
       // آب‌سازی اولیه از حافظه محلی — فقط یک‌بار هنگام مانت اجرا می‌شود
       // eslint-disable-next-line react-hooks/set-state-in-effect
       if (storedFavs) setFavorites(JSON.parse(storedFavs));
+
+      const storedLifecycle = localStorage.getItem(LIFECYCLE_STORAGE_KEY);
+      if (storedLifecycle) {
+        const parsedLifecycle = JSON.parse(storedLifecycle) as SignalLifecycleMap;
+        if (parsedLifecycle && typeof parsedLifecycle === 'object') {
+          lifecycleRef.current = parsedLifecycle;
+          setLifecycle(parsedLifecycle);
+        }
+      }
 
       const storedWeights = localStorage.getItem('crypto_scanner_weights');
       if (storedWeights) {
@@ -96,9 +125,11 @@ export default function Home() {
       if (!res.ok) throw new Error(`خطای اسکنر بازار: وضعیت HTTP ${res.status}`);
       const data = await res.json();
 
-      if (data.dataSource === 'simulated') {
-        setDataSource('simulated');
-      }
+      // وضعیت منبع داده از خودِ همین پاسخ خوانده می‌شود (نه یک پرچم سراسری)،
+      // بنابراین با بازگشت اتصال، نشانگر دوباره «زنده» می‌شود.
+      setDataSource(data.dataSource === 'simulated' ? 'simulated' : 'live');
+      setDataQuality(data.dataQuality ?? null);
+      setScanErrors(Array.isArray(data.errors) ? data.errors : []);
 
       if (data.signals) {
         setSignals(data.signals);
@@ -107,11 +138,23 @@ export default function Home() {
           dateObj.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
         );
 
-        // اطلاع‌رسانی سیگنال‌های خیلی قوی
+        // اطلاع‌رسانی سیگنال‌های خیلی قوی — فقط برای «سیگنال تازه» و نه هر ۶۰ ثانیه.
+        // پیش‌تر تا زمانی که یک ستاپ قوی در جدول می‌ماند، هر دقیقه یک توست و صدا
+        // تکرار می‌شد (نویز آزاردهنده) و تاریخچهٔ محلی هم از تکرار پر می‌شد.
+        const nowTs = Date.now();
         const veryStrong = data.signals.filter((s: Signal) => s.classification === 'VERY_STRONG');
-        if (veryStrong.length > 0) {
+        const freshAlerts = veryStrong.filter((sig: Signal) => {
+          const key = `${sig.symbol}_${sig.direction}`;
+          const lastAlert = alertHistoryRef.current.get(key) || 0;
+          return nowTs - lastAlert > ALERT_COOLDOWN_MS;
+        });
+
+        if (freshAlerts.length > 0) {
+          freshAlerts.forEach((sig: Signal) =>
+            alertHistoryRef.current.set(`${sig.symbol}_${sig.direction}`, nowTs)
+          );
           showToast(
-            `🔔 ${veryStrong.length} سیگنال ${faLabel(FA_CLASSIFICATION, 'VERY_STRONG')} شناسایی شد: ${veryStrong
+            `🔔 ${freshAlerts.length} سیگنال تازهٔ ${faLabel(FA_CLASSIFICATION, 'VERY_STRONG')}: ${freshAlerts
               .map((s: Signal) => s.symbol)
               .slice(0, 3)
               .join('، ')}`
@@ -119,16 +162,35 @@ export default function Home() {
           if (soundEnabled) playAlertSound();
         }
 
-        // ذخیره تصویر لحظه‌ای در حافظه محلی مرورگر
+        // ردیاب چرخهٔ عمر سیگنال‌ها: «تازه / پایدار / برگشتی / بازگشتی» + سن ستاپ
+        const nextLifecycle = updateSignalLifecycle(lifecycleRef.current, data.signals, nowTs);
+        lifecycleRef.current = nextLifecycle;
+        setLifecycle(nextLifecycle);
+        try {
+          localStorage.setItem(LIFECYCLE_STORAGE_KEY, JSON.stringify(nextLifecycle));
+        } catch {
+          // نادیده گرفته می‌شود
+        }
+
+        // ذخیره تصویر لحظه‌ای در حافظه محلی مرورگر (با حذف تکرار)
         try {
           const stored = localStorage.getItem('crypto_signal_scanner_history');
           const historyList = stored ? JSON.parse(stored) : [];
           veryStrong.forEach((sig: Signal) => {
-            historyList.unshift({
-              id: `${sig.symbol}_${Date.now()}`,
-              savedAt: Date.now(),
-              signal: sig,
-            });
+            const duplicate = historyList.find(
+              (entry: { signal?: Signal; savedAt?: number }) =>
+                entry?.signal?.symbol === sig.symbol &&
+                entry?.signal?.direction === sig.direction &&
+                typeof entry?.savedAt === 'number' &&
+                nowTs - entry.savedAt < HISTORY_DEDUPE_MS
+            );
+            if (!duplicate) {
+              historyList.unshift({
+                id: `${sig.symbol}_${nowTs}`,
+                savedAt: nowTs,
+                signal: sig,
+              });
+            }
           });
           localStorage.setItem('crypto_signal_scanner_history', JSON.stringify(historyList.slice(0, 50)));
         } catch {
@@ -187,11 +249,23 @@ export default function Home() {
   const previousCountRef = useRef(SCAN_INTERVAL_SECONDS);
   useEffect(() => {
     if (previousCountRef.current === 1 && secondsUntilNextScan === SCAN_INTERVAL_SECONDS) {
-       
       fetchScannerSignals();
+      // اگر کاربر در تب تحلیل کوین است، تحلیل همان نماد هم تازه‌سازی می‌شود
+      if (activeTab === 'analyzer') {
+        // تازه‌سازی تحلیل کوین در چرخهٔ اسکن — setState درون تابع واکشی است
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        fetchCoinAnalysis(selectedSymbol, currentTimeframe);
+      }
     }
     previousCountRef.current = secondsUntilNextScan;
-  }, [secondsUntilNextScan, fetchScannerSignals]);
+  }, [
+    secondsUntilNextScan,
+    fetchScannerSignals,
+    fetchCoinAnalysis,
+    activeTab,
+    selectedSymbol,
+    currentTimeframe,
+  ]);
 
   // شروع تحلیل کوین با تغییر نماد یا تایم‌فریم
   useEffect(() => {
@@ -237,6 +311,18 @@ export default function Home() {
 
       {/* محتوای اصلی صفحه */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6">
+        {/* هشدار کیفیت داده — شفافیت دربارهٔ منبع داده و خطاهای اسکن */}
+        {activeTab !== 'analyzer' && dataSource === 'simulated' && (
+          <div className="mb-4 p-3 bg-amber-950/40 border border-amber-800/60 rounded-xl text-xs text-amber-300 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <span>
+              {dataQuality?.message ||
+                'دسترسی به API عمومی بایننس برقرار نیست؛ داده‌های نمایش‌داده‌شده از موتور شبیه‌سازی قطعی می‌آیند و برای معاملهٔ واقعی مناسب نیستند.'}
+              {dataQuality ? ` (نسبت دادهٔ زنده: ${Math.round(dataQuality.liveRatio * 100)}٪)` : ''}
+            </span>
+          </div>
+        )}
+
         {errorMessage && (
           <div className="mb-6 p-4 bg-rose-950/60 border border-rose-800 rounded-xl text-xs text-rose-300 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
@@ -265,6 +351,9 @@ export default function Home() {
             onToggleFavorite={handleToggleFavorite}
             currentTimeframe={currentTimeframe}
             onChangeTimeframe={setCurrentTimeframe}
+            dataQuality={dataQuality}
+            errors={scanErrors}
+            lifecycle={lifecycle}
           />
         )}
 

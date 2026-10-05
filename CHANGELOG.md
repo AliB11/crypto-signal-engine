@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] – 2026-10-05
+
+بازبینی ۳۶۰ درجه و لایه‌به‌لایهٔ موتور، رفع اشکالات داده/تحلیل/API و افزودن سه قابلیت نوآورانه.
+(گزارش کامل: `docs/DEBUG-REPORT.md`)
+
+### Fixed — Data Layer
+- **Unified deterministic simulation curve**: klines, the 24h ticker and every timeframe of the same symbol now sample one time-based price function, so offline data is self-consistent and reproducible (`src/providers/simulation.ts`).
+- **Honest data status**: `getDataStatus()` reflects the most recently served source instead of latching to "simulated" forever after the first failure; `/api/health` reports `healthy`/`degraded`, open breakers, last error and counters.
+- **Resilience**: 4s request timeout, single retry, per-host circuit breaker (2 failures → 25s), in-flight request coalescing, and a 3s cache for simulated payloads (previously every fallback re-simulated and `cacheHits` stayed 0).
+- **Cache accounting**: `liveCacheHits` / `simulatedCacheHits` are exposed and counted in `dataQuality`, so cache-served responses are no longer mislabelled as live.
+- **Top symbols**: fetched from the real ticker universe with stablecoin and leveraged-token filtering (JUPUSDT-style false positives avoided); graceful default list when offline.
+- **Provider chain documented honestly**: removed the never-used CoinGecko "market data fallback" instance; CoinGecko is used for non-blocking market-cap enrichment behind its own breaker.
+
+### Fixed — Analysis Engines
+- **No look-ahead liquidity levels**: every level now carries `confirmedTimestamp`; the sweep engine ignores levels that were not yet structurally confirmed at the evaluated candle.
+- **Session liquidity on a sub-timeframe**: sessions are always computed on 1m/5m/15m data (previously the requested 4h/1d timeframe, where a session holds almost no candles); session precedence fixed (New York → London → Asian) with `activeSessions` and New York key levels added.
+- **Wilder ADX(14)** with +DI/−DI dominance and EMA20/50 slope replaces the previous approximation; the regime engine classifies trends from them.
+- **Value area** (VAH/VAL) expanded from POC to cover 70% of volume; tick-flow honesty flag `hasTickFlowData`.
+
+### Fixed — Signal & Backtest
+- **Context vs confidence**: `score` now caps at `MIN_SIGNAL_SCORE − 1` when there is no directional setup (previously rows could read "NO_SIGNAL" with a score of 81); the raw context quality remains available as `contextScore` and is shown separately in the UI.
+- **Quality gate**: directional setups below the score threshold no longer ship a trade plan.
+- **Draw-on-Liquidity targets**: TP1/TP2/TP3 come from the liquidity map (EQH/EQL, PDH/PDL, weekly/session levels, value-area edges) with per-target `targetSources`, `stopLossBasis` and `atrPercent`; the ladder is guaranteed monotonic and the first target clears 1.2R.
+- **Risk cap**: plans whose structural stop exceeds `MAX_RISK_PERCENT` (8%) are refused with an explanatory warning.
+- **Simulated derivatives are excluded from scoring** (neutral component, weight redistributed) so fabricated OI trends cannot inflate confidence; the backtest already did this and now also derives realized RR from the actual plan levels.
+- **Annualisation**: Sharpe/Sortino scale with `sqrt(periodsPerYear / avgHoldCandles)`; resampled MTF data in the backtest is built strictly from the visible window.
+
+### Added — API & Platform
+- Shared validation/hardening helpers (`src/lib/http.ts`): symbol sanitisation, timeframe and numeric bounds, weight parsing, in-memory token-bucket rate limiting per IP with `429` + `Retry-After`, and consistent error payloads.
+- Single source of truth for engine configuration (`src/config/engine.ts`) backing `/api/config`.
+- Response provenance on every analysis/scanner payload: `dataSource`, `dataQuality`, `durationMs`, per-symbol `errors`.
+- 10 new regression tests (19 total): deterministic simulation, rescaling, risk metrics, API validation, rate limiter, target ladder, liquidity-mapped targets, confirmation-window look-ahead, session key-level sweeps, PWH/PWL, Wilder ADX, volume transparency.
+
+### Added — Innovative Features
+- **Market Pulse (نبض کلان بازار)**: weighted breadth, average ADX, median ATR%, relative volatility and dominant regime aggregated from the scan (`src/lib/market-pulse.ts`, `MarketPulsePanel`).
+- **Signal Lifecycle (چرخه عمر سیگنال)**: every setup tagged تازه / پایدار ×n / برگشتِ جهت / بازگشت with age and score delta, persisted in `localStorage` (capped, zero server storage) — `src/lib/signal-lifecycle.ts`.
+- **Liquidity Magnet Ladder (نردبان مغناطیس نقدینگی)**: nearest untapped levels above/below price with a `strength ÷ (1 + distance%)` draw meter (`src/lib/liquidity-magnets.ts`, `LiquidityMagnetLadder`).
+- Backtest assumption disclosure panel and data-source transparency in the analyzer/scanner.
+
+---
+
 ## [1.0.0] – 2025-01-15
 
 ### Added
