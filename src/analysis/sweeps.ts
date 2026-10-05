@@ -41,8 +41,12 @@ export function detectLiquiditySweeps(
     const isVolumeConfirmed = candle.volume >= avgVolume * cfg.volumeMultiplierThreshold;
 
     for (const lvl of levels) {
-      // Must not check levels created after this candle
-      if (lvl.timestamp > candle.timestamp) continue;
+      // سطح باید *پیش از* این کندل هم تشکیل شده باشد و هم تأیید شده باشد.
+      // استفاده از timestamp تشکیل (به‌جای زمان تأیید پیوت) یک خطای آینده‌نگری پنهان بود:
+      // پیوتی که ۲ کندل بعد تأیید می‌شود، نباید در همان ۲ کندلِ بعدی به‌عنوان سطح
+      // «قابل سوئیپ» شناخته شود.
+      const levelVisibleFrom = lvl.confirmedTimestamp ?? lvl.timestamp;
+      if (levelVisibleFrom > candle.timestamp) continue;
 
       // 1. SELL-SIDE LIQUIDITY SWEEP (Bullish reversal trigger)
       if (

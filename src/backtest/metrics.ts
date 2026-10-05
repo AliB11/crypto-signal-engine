@@ -1,8 +1,18 @@
-import { BacktestTrade, BacktestMetrics } from '../types/market';
+import { BacktestTrade, BacktestMetrics, Timeframe } from '../types/market';
+import { periodsPerYear } from '../lib/timeframes';
 
+/**
+ * محاسبهٔ شاخص‌های عملکرد.
+ *
+ * اصلاح مهم: بازده هر معامله در واحد «ریسک ثابت» است و «بازده روزانه» نیست؛
+ * نسخهٔ قبلی آن را با √۲۵۲ سالانه می‌کرد که فقط وقتی درست است که روزی یک معامله
+ * داشته باشیم. اکنون تعداد دوره‌های واقعی در سال از (تایم‌فریم × میانگین کندل‌های
+ * نگهداری) محاسبه و سالانه‌سازی بر همان پایه انجام می‌شود.
+ */
 export function calculateBacktestMetrics(
   trades: BacktestTrade[],
-  initialBalance = 10000
+  initialBalance = 10000,
+  timeframe: Timeframe = '15m'
 ): BacktestMetrics {
   if (!trades || trades.length === 0) {
     return {
@@ -83,7 +93,9 @@ export function calculateBacktestMetrics(
       : 0;
 
   const avgWinPnl = wins.length > 0 ? wins.reduce((s, t) => s + t.rrRealized, 0) / wins.length : 0;
-  const avgLossPnl = losses.length > 0 ? Math.abs(losses.reduce((s, t) => s + t.rrRealized, 0) / losses.length) : 1;
+  const avgLossPnl =
+    losses.length > 0 ? Math.abs(losses.reduce((s, t) => s + t.rrRealized, 0) / losses.length) : 1;
+  // انتظار ریاضی به واحد R (ریسک هر معامله) — نه درصد
   const expectancy = parseFloat(
     ((winRate / 100) * avgWinPnl - (lossRate / 100) * avgLossPnl).toFixed(2)
   );
@@ -113,8 +125,15 @@ export function calculateBacktestMetrics(
     negativeReturns.reduce((sum, r) => sum + Math.pow(r, 2), 0) / (negativeReturns.length || 1);
   const downsideStd = Math.sqrt(downsideVariance);
 
-  const sharpeRatio = stdDev > 0 ? parseFloat(((meanReturn / stdDev) * Math.sqrt(252)).toFixed(2)) : 0;
-  const sortinoRatio = downsideStd > 0 ? parseFloat(((meanReturn / downsideStd) * Math.sqrt(252)).toFixed(2)) : 0;
+  // تعداد معاملات در سال = دوره‌های سال / میانگین طول هر معامله (بر حسب کندل)
+  const barsPerYear = periodsPerYear(timeframe);
+  const averageHold = avgHoldCandles > 0 ? avgHoldCandles : 1;
+  const tradesPerYear = Math.max(1, barsPerYear / averageHold);
+  const annualizationFactor = Math.sqrt(tradesPerYear);
+
+  const sharpeRatio = stdDev > 0 ? parseFloat(((meanReturn / stdDev) * annualizationFactor).toFixed(2)) : 0;
+  const sortinoRatio =
+    downsideStd > 0 ? parseFloat(((meanReturn / downsideStd) * annualizationFactor).toFixed(2)) : 0;
 
   const cumulativeReturnPercent = parseFloat(
     (((currentEquity - initialBalance) / initialBalance) * 100).toFixed(2)

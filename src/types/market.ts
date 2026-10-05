@@ -56,6 +56,12 @@ export interface LiquidityLevel {
   sweptAt?: number;
   distancePercent: number; // relative to current price
   timestamp: number;
+  /**
+   * زمانِ تأییدِ ساختاری سطح (نه زمان تشکیل پیوت).
+   * برای پیوت با rightBars=2، سطح فقط پس از بسته‌شدن کندل i+2 قابل استناد است؛
+   * موتور سوئیپ از این مقدار استفاده می‌کند تا سوئیپِ «آینده‌نگر» ثبت نشود.
+   */
+  confirmedTimestamp?: number;
   timeframe?: Timeframe;
 }
 
@@ -132,10 +138,14 @@ export interface SessionInfo {
   highSwept: boolean;
   lowSwept: boolean;
   bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  /** زمان آخرین کندل همین جلسه (مبنای زمانی سطوح کلیدی جلسه) */
+  endTimestamp?: number;
 }
 
 export interface SessionLiquiditySummary {
   currentSession: 'Asian' | 'London' | 'New York' | 'Between Sessions';
+  /** همهٔ جلسات فعال در لحظهٔ تحلیل (در بازه‌های هم‌پوشانی بیش از یک جلسه فعال است) */
+  activeSessions?: ('Asian' | 'London' | 'New York')[];
   sessions: {
     asian: SessionInfo;
     london: SessionInfo;
@@ -193,6 +203,48 @@ export interface DerivativesData {
   positioning: 'LONG_DOMINANT' | 'SHORT_DOMINANT' | 'BALANCED' | 'EXTREME_LONG' | 'EXTREME_SHORT';
   takerBuySellRatio: number;
   timestamp: number;
+  /**
+   * اگر true باشد، مقادیر از موتور شبیه‌سازی قطعی آمده‌اند و دادهٔ واقعی بازار نیستند.
+   * رابط کاربری موظف است این وضعیت را شفاف نمایش دهد.
+   */
+  isSimulated?: boolean;
+}
+
+/** آمار داخلی پروایدر داده — برای شفافیت منبع داده و عیب‌یابی */
+export interface DataProviderStats {
+  /** تعداد درخواست‌های موفق به API واقعی */
+  liveFetches: number;
+  /** تعداد درخواست‌هایی که به دادهٔ شبیه‌سازی‌شده افتاده‌اند */
+  simulatedFetches: number;
+  /** تعداد پاسخ‌های خوانده‌شده از حافظهٔ نهان (زنده + شبیه‌سازی) */
+  cacheHits: number;
+  /** بخشی از cacheHits که مربوط به دادهٔ زندهٔ بایننس است */
+  liveCacheHits: number;
+  /** بخشی از cacheHits که مربوط به دادهٔ شبیه‌سازی‌شده است */
+  simulatedCacheHits: number;
+  /** تعداد درخواست‌های هم‌زمان که با coalescing ادغام شدند */
+  coalescedRequests: number;
+  /** تعداد قطع‌کننده‌های مدار (circuit breakers) که فعال شده‌اند */
+  breakerTrips: number;
+  /** آخرین خطای شبکهٔ ثبت‌شده */
+  lastError: string | null;
+  /** زمان آخرین دادهٔ زندهٔ موفق */
+  lastLiveAt: number | null;
+  /** زمان آخرین افت به دادهٔ شبیه‌سازی‌شده */
+  lastSimulatedAt: number | null;
+  /** نام میزبان‌هایی که قطع‌کنندهٔ مدارشان باز است */
+  openBreakers: string[];
+}
+
+/** کیفیت منبع داده در یک پاسخ مشخص (شفافیت برای کاربر) */
+export interface DataQualityInfo {
+  source: 'live' | 'simulated' | 'mixed';
+  /** نسبت فراخوانی‌های زنده در طول این درخواست (۰ تا ۱) */
+  liveRatio: number;
+  liveFetches: number;
+  simulatedFetches: number;
+  /** پیام قابل نمایش فارسی */
+  message: string;
 }
 
 export type MarketRegimeType =
@@ -208,9 +260,16 @@ export interface MarketRegime {
   regime: MarketRegimeType;
   atr: number;
   atrPercent: number;
+  /** ADX استاندارد وایلدر (۱۴ دوره) — نه تقریب شمارش کندل */
   adx: number;
   bbWidth: number;
   description: string;
+  /** شاخص جهت‌دار مثبت (۱۴ دوره) */
+  plusDI?: number;
+  /** شاخص جهت‌دار منفی (۱۴ دوره) */
+  minusDI?: number;
+  /** فاصلهٔ درصدی EMA20 از EMA50 (معیار تأیید جهت روند) */
+  emaSlopePercent?: number;
 }
 
 export interface TimeframeAnalysis {
@@ -288,6 +347,21 @@ export interface SignalWeights {
   advancedLayer3: number; // default 0.10
 }
 
+/** منبع هدف قیمتی — برای شفافیت «چرا این هدف انتخاب شد» */
+export type TradeTargetSource =
+  | 'EQUAL_HIGH'
+  | 'EQUAL_LOW'
+  | 'SWING_HIGH'
+  | 'SWING_LOW'
+  | 'PREVIOUS_DAY_HIGH'
+  | 'PREVIOUS_DAY_LOW'
+  | 'SESSION_HIGH'
+  | 'SESSION_LOW'
+  | 'VOLUME_PROFILE_VAH'
+  | 'VOLUME_PROFILE_VAL'
+  | 'VOLUME_PROFILE_POC'
+  | 'R_MULTIPLE';
+
 export interface TradePlan {
   entry: {
     min: number;
@@ -306,13 +380,26 @@ export interface TradePlan {
   tp3Percent: number;
   rrRatio: number;
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+  /** منبع هر هدف؛ اهداف از «نقشهٔ نقدینگی» استخراج می‌شوند نه ضرایب ثابت */
+  targetSources?: {
+    tp1: TradeTargetSource;
+    tp2: TradeTargetSource;
+    tp3: TradeTargetSource;
+  };
+  /** نوسان (ATR) در لحظهٔ صدور سیگنال — برای تنظیم حجم و حد ضرر */
+  atrPercent?: number;
+  /** حد ضرر مبتنی بر ساختار است یا فقط بر پایهٔ نوسان */
+  stopLossBasis?: 'STRUCTURE' | 'SWEEP_EXTREME' | 'ATR' | 'FALLBACK';
 }
 
 export interface Signal {
   symbol: string;
   timeframe: Timeframe;
   direction: SignalDirection;
+  /** امتیاز ستاپ: در نبود ستاپ جهت‌دار، سقف می‌خورد تا «اطمینان کاذب» القا نکند */
   score: number; // 0-100
+  /** کیفیت خام زمینهٔ بازار (۰-۱۰۰) — مستقل از وجود یا نبود ستاپ جهت‌دار */
+  contextScore?: number;
   classification: SignalClassification;
   currentPrice: number;
   tradePlan: TradePlan | null;
@@ -358,6 +445,10 @@ export interface FullAnalysisResult {
   analysisTimestamp: number;
   /** زنده بودن داده‌ها: اگر پروایدر به داده شبیه‌سازی‌شده پناه برده باشد 'simulated' است */
   dataSource?: 'live' | 'simulated';
+  /** جزئیات کیفیت دادهٔ همین پاسخ (نسبت فراخوانی‌های زنده) */
+  dataQuality?: DataQualityInfo;
+  /** زمان اجرای کامل خط لوله به میلی‌ثانیه (برای پایش کارایی) */
+  durationMs?: number;
 }
 
 // Backtesting interfaces
@@ -400,7 +491,8 @@ export interface BacktestMetrics {
   winRate: number; // %
   lossRate: number; // %
   profitFactor: number;
-  expectancy: number; // Expectancy per trade %
+  /** انتظار ریاضی هر معامله بر حسب واحد ریسک (R) */
+  expectancy: number;
   maxDrawdownPercent: number;
   avgRR: number;
   sharpeRatio: number;
@@ -437,4 +529,6 @@ export interface BacktestReport {
   walkForward: WalkForwardResult;
   failureBreakdown: FalseSignalBreakdown;
   trades: BacktestTrade[];
+  /** فرض‌های شفاف شبیه‌سازی (برای جلوگیری از تفسیر نادرست نتایج) */
+  assumptions?: string[];
 }

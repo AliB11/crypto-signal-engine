@@ -411,6 +411,23 @@ export const BacktestDashboard: React.FC<Props> = ({
             </div>
           </div>
 
+          {/* فرض‌های شفاف شبیه‌سازی — برای جلوگیری از تفسیر نادرست نتایج */}
+          {report.assumptions && report.assumptions.length > 0 && (
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl">
+              <h3 className="font-bold text-slate-100 text-sm pb-3 border-b border-slate-800 mb-3">
+                فرض‌های شبیه‌سازی (شفافیت نتایج)
+              </h3>
+              <ul className="flex flex-col gap-2 text-[11px] text-slate-400 leading-relaxed">
+                {report.assumptions.map((assumption, index) => (
+                  <li key={index} className="flex items-start gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 mt-1.5 shrink-0" />
+                    <span>{assumption}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {/* جدول لاگ معاملات شبیه‌سازی‌شده */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xl">
             <div className="p-4 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2">

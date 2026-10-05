@@ -137,3 +137,27 @@ export function faLabel(map: Record<string, string>, key: string | undefined | n
   if (!key) return '—';
   return map[key] || key.replace(/_/g, ' ');
 }
+
+/** منبع اهداف سود در نقشهٔ نقدینگی */
+export const FA_TARGET_SOURCE: Record<string, string> = {
+  EQUAL_HIGH: 'سقف برابر (EQH)',
+  EQUAL_LOW: 'کف برابر (EQL)',
+  SWING_HIGH: 'سقف نوسانی',
+  SWING_LOW: 'کف نوسانی',
+  PREVIOUS_DAY_HIGH: 'سقف روز قبل (PDH)',
+  PREVIOUS_DAY_LOW: 'کف روز قبل (PDL)',
+  SESSION_HIGH: 'سقف جلسه',
+  SESSION_LOW: 'کف جلسه',
+  VOLUME_PROFILE_VAH: 'مرز بالای ارزش (VAH)',
+  VOLUME_PROFILE_VAL: 'مرز پایین ارزش (VAL)',
+  VOLUME_PROFILE_POC: 'نقطهٔ کنترل حجم (POC)',
+  R_MULTIPLE: 'ضریب ریسک',
+};
+
+/** مبنای حد ضرر */
+export const FA_STOP_BASIS: Record<string, string> = {
+  STRUCTURE: 'ساختار بازار (آخرین سوئینگ)',
+  SWEEP_EXTREME: 'اکستریم سوئیپ نقدینگی',
+  ATR: 'نوسان ATR',
+  FALLBACK: 'پیش‌فرض',
+};

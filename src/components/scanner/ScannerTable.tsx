@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
-import { Signal, Timeframe } from '@/types/market';
+import React, { useEffect, useState } from 'react';
+import { Signal, Timeframe, DataQualityInfo } from '@/types/market';
 import {
   TrendingUp,
   TrendingDown,
@@ -14,9 +14,12 @@ import {
   Flame,
   Gauge,
   BarChart3,
+  Radio,
 } from 'lucide-react';
 import { formatPrice, toFaDigits } from '@/lib/format';
 import { faLabel, FA_CLASSIFICATION, FA_REGIME } from '@/lib/i18n';
+import { formatLifecycleAge, lifecycleStateLabel, SignalLifecycleMap } from '@/lib/signal-lifecycle';
+import { MarketPulsePanel } from './MarketPulsePanel';
 
 interface Props {
   signals: Signal[];
@@ -29,6 +32,12 @@ interface Props {
   onToggleFavorite: (symbol: string) => void;
   currentTimeframe: Timeframe;
   onChangeTimeframe: (tf: Timeframe) => void;
+  /** کیفیت منبع دادهٔ همین اسکن */
+  dataQuality?: DataQualityInfo | null;
+  /** نمادهایی که تحلیلشان شکست خورده است */
+  errors?: { symbol: string; message: string }[];
+  /** ردیاب چرخهٔ عمر ستاپ‌ها (تازه/پایدار/برگشتی/بازگشتی) — کاملاً سمت مرورگر */
+  lifecycle?: SignalLifecycleMap | null;
 }
 
 export const ScannerTable: React.FC<Props> = ({
@@ -42,8 +51,19 @@ export const ScannerTable: React.FC<Props> = ({
   onToggleFavorite,
   currentTimeframe,
   onChangeTimeframe,
+  dataQuality,
+  errors = [],
+  lifecycle = null,
 }) => {
   const [search, setSearch] = useState('');
+  // زمان جاری برای محاسبهٔ «سن ستاپ»؛ هر ۳۰ ثانیه تازه می‌شود تا برچسب‌ها کهنه نشوند
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
   const [filterType, setFilterType] = useState<'ALL' | 'LONGS' | 'SHORTS' | 'STRONG_ONLY' | 'FAVORITES'>('ALL');
   const [sortBy, setSortBy] = useState<'score' | 'symbol' | 'price' | 'rr'>('score');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
@@ -79,6 +99,48 @@ export const ScannerTable: React.FC<Props> = ({
       ? Math.round(signals.reduce((sum, s) => sum + s.score, 0) / signals.length)
       : 0;
   const bestSignal = signals.length > 0 ? [...signals].sort((a, b) => b.score - a.score)[0] : null;
+
+  const getLifecycleBadge = (sig: Signal) => {
+    const entry = lifecycle?.[sig.symbol];
+    if (!entry || !entry.active || (sig.direction !== 'LONG' && sig.direction !== 'SHORT')) {
+      return <span className="text-slate-600 text-[11px]">—</span>;
+    }
+
+    const tone =
+      entry.state === 'PERSISTENT'
+        ? 'bg-emerald-950/70 text-emerald-300 border-emerald-800/60'
+        : entry.state === 'FLIPPED'
+        ? 'bg-amber-950/70 text-amber-300 border-amber-800/60'
+        : entry.state === 'RESUMED'
+        ? 'bg-sky-950/70 text-sky-300 border-sky-800/60'
+        : 'bg-slate-800/70 text-slate-300 border-slate-700';
+
+    const previousLabel =
+      entry.state === 'FLIPPED' && entry.previousDirection
+        ? ` · از ${entry.previousDirection === 'LONG' ? 'لانگ' : 'شورت'}`
+        : '';
+
+    return (
+      <div className="flex flex-col gap-1">
+        <span className={`inline-flex w-fit items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${tone}`}>
+          {lifecycleStateLabel(entry)}
+        </span>
+        <span className="text-[9px] text-slate-500 leading-tight">
+          سن <span className="num">{formatLifecycleAge(now - entry.firstSeen)}</span>
+          {previousLabel}
+        </span>
+        {entry.scoreDelta !== 0 && (
+          <span
+            className={`text-[9px] font-mono font-bold ${
+              entry.scoreDelta > 0 ? 'text-emerald-400' : 'text-rose-400'
+            }`}
+          >
+            {entry.scoreDelta > 0 ? '▲' : '▼'} <span className="num">{toFaDigits(Math.abs(entry.scoreDelta))}</span>
+          </span>
+        )}
+      </div>
+    );
+  };
 
   const getClassificationBadge = (classification: Signal['classification']) => {
     switch (classification) {
@@ -199,6 +261,9 @@ export const ScannerTable: React.FC<Props> = ({
         </div>
       )}
 
+      {/* نبض کلان بازار — تجمیع سوگیری/روند/نوسان کل اسکن */}
+      {signals.length > 0 && <MarketPulsePanel signals={signals} />}
+
       <div className="flex flex-col bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
         {/* نوار کنترل‌ها */}
         <div className="p-4 bg-slate-950/90 border-b border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -297,6 +362,7 @@ export const ScannerTable: React.FC<Props> = ({
                   <th className="py-3 px-4">نماد</th>
                   <th className="py-3 px-4">قیمت</th>
                   <th className="py-3 px-4">جهت سیگنال</th>
+                  <th className="py-3 px-4">وضعیت ستاپ</th>
                   <th className="py-3 px-4">امتیاز</th>
                   <th className="py-3 px-4">قدرت</th>
                   <th className="py-3 px-4">سوئیپ نقدینگی</th>
@@ -348,6 +414,9 @@ export const ScannerTable: React.FC<Props> = ({
                       {/* جهت */}
                       <td className="py-3.5 px-4">{getDirectionBadge(sig.direction)}</td>
 
+                      {/* وضعیت چرخهٔ عمر ستاپ */}
+                      <td className="py-3.5 px-4">{getLifecycleBadge(sig)}</td>
+
                       {/* نشانگر امتیاز */}
                       <td className="py-3.5 px-4">
                         <div className="flex items-center gap-2">
@@ -366,6 +435,16 @@ export const ScannerTable: React.FC<Props> = ({
                             />
                           </div>
                           <span className="font-bold font-mono text-slate-200 text-xs num">{sig.score}</span>
+                          {sig.direction === 'NO_SIGNAL' &&
+                            typeof sig.contextScore === 'number' &&
+                            sig.contextScore > sig.score && (
+                              <span
+                                className="text-[9px] text-slate-500"
+                                title="کیفیت زمینهٔ بازار (مستقل از نبود ستاپ جهت‌دار)"
+                              >
+                                زمینه <span className="num">{sig.contextScore}</span>
+                              </span>
+                            )}
                         </div>
                       </td>
 
@@ -439,6 +518,46 @@ export const ScannerTable: React.FC<Props> = ({
             </table>
           )}
         </div>
+
+        {/* نوار شفافیت منبع داده و خطاهای اسکن */}
+        {(dataQuality || errors.length > 0) && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-3.5 py-2.5 bg-slate-950/70 border-t border-slate-800 text-[11px]">
+            <div className="flex items-center gap-1.5">
+              <Radio
+                className={`w-3.5 h-3.5 ${
+                  dataQuality?.source === 'live' ? 'text-emerald-400' : 'text-amber-400'
+                }`}
+              />
+              <span className={dataQuality?.source === 'live' ? 'text-emerald-400' : 'text-amber-300'}>
+                {dataQuality?.source === 'live'
+                  ? 'دادهٔ زندهٔ بایننس'
+                  : dataQuality?.source === 'mixed'
+                  ? `دادهٔ ترکیبی (${Math.round((dataQuality?.liveRatio || 0) * 100)}٪ زنده)`
+                  : 'دادهٔ شبیه‌سازی‌شده (بدون دسترسی به بایننس)'}
+              </span>
+            </div>
+            <div className="text-slate-500">
+              فراخوانی زنده: <span className="num text-slate-300">{dataQuality?.liveFetches ?? 0}</span>
+              {' · '}
+              شبیه‌سازی: <span className="num text-slate-300">{dataQuality?.simulatedFetches ?? 0}</span>
+            </div>
+            {errors.length > 0 && (
+              <div
+                className="text-rose-300 flex items-center gap-1.5"
+                title={errors.map((e) => `${e.symbol}: ${e.message}`).join('\n')}
+              >
+                <ShieldAlert className="w-3.5 h-3.5" />
+                <span>
+                  <span className="num">{toFaDigits(errors.length)}</span> نماد بدون تحلیل ({errors
+                    .slice(0, 3)
+                    .map((e) => e.symbol)
+                    .join('، ')}
+                  {errors.length > 3 ? '…' : ''})
+                </span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* خلاصه آماری پاصفحه */}
         <div className="flex flex-wrap items-center justify-between p-3.5 bg-slate-950 border-t border-slate-800 text-xs text-slate-400 gap-3">
