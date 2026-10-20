@@ -14,6 +14,16 @@ const DEFAULT_SWEEP_CONFIG: SweepConfig = {
   volumeMultiplierThreshold: 1.1,
 };
 
+/**
+ * نسبت شدو به بدنه.
+ * اگر بدنه ناچیز باشد این نسبت عملاً بی‌نهایت است؛ گزارش یک عدد ساختگی مثل ۲.۰
+ * اطلاعات دروغ تولید می‌کرد. به‌جایش سهم شدو از *دامنهٔ کل کندل* را برمی‌گردانیم
+ * که همواره تعریف‌شده و بین ۰ و ۱ است.
+ */
+function wickRatioOf(wick: number, bodySize: number, range: number): number {
+  return bodySize > range * 0.05 ? wick / bodySize : wick / range;
+}
+
 export function detectLiquiditySweeps(
   klines: Kline[],
   levels: LiquidityLevel[],
@@ -25,9 +35,12 @@ export function detectLiquiditySweeps(
   const cfg = { ...DEFAULT_SWEEP_CONFIG, ...config };
   const sweeps: LiquiditySweep[] = [];
 
-  // Calculate volume SMA for volume confirmation
+  // میانگین حجم برای تأیید حجمی — بدون آخرین کندل که هنوز در حال تشکیل است،
+  // وگرنه یک کندل پرحجمِ جاری میانگین را بالا می‌برد و تأیید حجمیِ خودش را خنثی می‌کند.
+  const closedForVolume = klines.slice(0, Math.max(0, klines.length - 1));
+  const volumeWindow = closedForVolume.slice(-30);
   const avgVolume =
-    klines.slice(-30).reduce((sum, k) => sum + k.volume, 0) / Math.min(30, klines.length);
+    volumeWindow.length > 0 ? volumeWindow.reduce((sum, k) => sum + k.volume, 0) / volumeWindow.length : 0;
 
   // Focus on the most recent 30 candles for active setups
   const searchStart = Math.max(0, klines.length - 40);
@@ -36,9 +49,17 @@ export function detectLiquiditySweeps(
     const candle = klines[i];
     const prevCandle = klines[i - 1];
     const bodySize = Math.abs(candle.close - candle.open);
+    const range = Math.max(candle.high - candle.low, candle.close * 1e-12);
     const upperWick = candle.high - Math.max(candle.open, candle.close);
     const lowerWick = Math.min(candle.open, candle.close) - candle.low;
     const isVolumeConfirmed = candle.volume >= avgVolume * cfg.volumeMultiplierThreshold;
+
+    // آستانهٔ «شدوی معتبر». وقتی بدنه ناچیز است (دوجی) مقایسه با بدنه بی‌معناست؛
+    // پیش‌تر شرط به `lowerWick >= lowerWick * 0.6` تقلیل می‌یافت که *همیشه درست* است
+    // و هر دوجیِ نفوذکننده را بدون هیچ شاهد ساختاری به «سوئیپ» تبدیل می‌کرد.
+    // در این حالت شدو را با دامنهٔ کل کندل می‌سنجیم.
+    const wickThreshold =
+      bodySize > range * 0.05 ? bodySize * cfg.minWickToBodyRatio : range * cfg.minWickToBodyRatio;
 
     for (const lvl of levels) {
       // سطح باید *پیش از* این کندل هم تشکیل شده باشد و هم تأیید شده باشد.
@@ -66,14 +87,14 @@ export function detectLiquiditySweeps(
           ) {
             // Case A: Intracandle sweep & reclaim (wicked down and closed back above)
             const sameCandleReclaim = candle.close >= lvl.price * 0.999;
-            const hasStrongLowerWick = lowerWick >= (bodySize > 0 ? bodySize * cfg.minWickToBodyRatio : lowerWick * 0.6);
+            const hasStrongLowerWick = lowerWick > 0 && lowerWick >= wickThreshold;
 
             // Case B: Pierced on prev candle, reclaimed on current candle
             const multiCandleReclaim =
               prevCandle && prevCandle.low < lvl.price && candle.close > lvl.price;
 
             if ((sameCandleReclaim && hasStrongLowerWick) || multiCandleReclaim) {
-              const wickRatio = bodySize > 0 ? lowerWick / bodySize : 2.0;
+              const wickRatio = wickRatioOf(lowerWick, bodySize, range);
 
               sweeps.push({
                 type: 'SELL_SIDE_SWEEP',
@@ -111,14 +132,14 @@ export function detectLiquiditySweeps(
           ) {
             // Case A: Intracandle sweep & reclaim (wicked up and closed back below)
             const sameCandleReclaim = candle.close <= lvl.price * 1.001;
-            const hasStrongUpperWick = upperWick >= (bodySize > 0 ? bodySize * cfg.minWickToBodyRatio : upperWick * 0.6);
+            const hasStrongUpperWick = upperWick > 0 && upperWick >= wickThreshold;
 
             // Case B: Pierced on prev candle, closed back below on current candle
             const multiCandleReclaim =
               prevCandle && prevCandle.high > lvl.price && candle.close < lvl.price;
 
             if ((sameCandleReclaim && hasStrongUpperWick) || multiCandleReclaim) {
-              const wickRatio = bodySize > 0 ? upperWick / bodySize : 2.0;
+              const wickRatio = wickRatioOf(upperWick, bodySize, range);
 
               sweeps.push({
                 type: 'BUY_SIDE_SWEEP',

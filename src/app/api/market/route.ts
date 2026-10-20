@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dataProvider } from '@/providers';
 import { checkRateLimit, clientKey, parseSymbolParam, rateLimitResponse, errorResponse } from '@/lib/http';
+import { createDataTrace, dataQualityFromTrace } from '@/providers/MarketDataProvider';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,11 +12,13 @@ export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
     const symbol = parseSymbolParam(searchParams.get('symbol'), 'BTCUSDT');
+    const trace = createDataTrace();
     const [ticker, metadata] = await Promise.all([
-      dataProvider.getTicker24h(symbol),
+      dataProvider.getTicker24h(symbol, trace),
       dataProvider.getMetadata(symbol),
     ]);
 
+    const dataQuality = dataQualityFromTrace(trace);
     const stats = dataProvider.getStats?.();
 
     return NextResponse.json(
@@ -23,7 +26,9 @@ export async function GET(request: NextRequest) {
         symbol,
         ticker,
         metadata,
-        dataSource: dataProvider.getDataStatus?.().live ? 'live' : 'simulated',
+        // کیفیت دادهٔ «همین پاسخ»، نه وضعیت سراسری پروایدر
+        dataSource: dataQuality.source,
+        dataQuality,
         dataStatus: stats
           ? {
               liveFetches: stats.liveFetches,

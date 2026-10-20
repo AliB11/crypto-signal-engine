@@ -123,9 +123,20 @@ export function detectMarketRegime(klines: Kline[]): MarketRegime {
     trs.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
   }
 
+  // ATR وایلدر (RMA) روی همهٔ بازهٔ موجود.
+  // پیش‌تر میانگین سادهٔ ۱۴ مقدار آخر TR گرفته می‌شد؛ این با ادعای «استاندارد
+  // وایلدر» که برای ADX همین فایل پیاده شده بود ناسازگار بود و ATR را به نویز
+  // کوتاه‌مدت حساس می‌کرد.
   const atrPeriod = 14;
-  const recentTRs = trs.slice(-atrPeriod);
-  const atr = recentTRs.reduce((a, b) => a + b, 0) / atrPeriod;
+  let atr = 0;
+  if (trs.length >= atrPeriod) {
+    atr = trs.slice(0, atrPeriod).reduce((a, b) => a + b, 0) / atrPeriod;
+    for (let i = atrPeriod; i < trs.length; i++) {
+      atr = (atr * (atrPeriod - 1) + trs[i]) / atrPeriod;
+    }
+  } else if (trs.length > 0) {
+    atr = trs.reduce((a, b) => a + b, 0) / trs.length;
+  }
   const currentPrice = klines[klines.length - 1].close;
   const atrPercent = currentPrice > 0 ? parseFloat(((atr / currentPrice) * 100).toFixed(2)) : 0;
 

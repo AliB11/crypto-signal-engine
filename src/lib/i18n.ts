@@ -78,6 +78,7 @@ export const FA_EXIT_REASON: Record<string, string> = {
   TP3: 'هدف سوم',
   STOP_LOSS: 'حد ضرر',
   TIMEOUT: 'پایان زمان',
+  END_OF_DATA: 'پایان بازهٔ داده',
 };
 
 export const FA_LEVEL_TYPE: Record<string, string> = {
@@ -146,6 +147,8 @@ export const FA_TARGET_SOURCE: Record<string, string> = {
   SWING_LOW: 'کف نوسانی',
   PREVIOUS_DAY_HIGH: 'سقف روز قبل (PDH)',
   PREVIOUS_DAY_LOW: 'کف روز قبل (PDL)',
+  PREVIOUS_WEEK_HIGH: 'سقف هفتهٔ قبل (PWH)',
+  PREVIOUS_WEEK_LOW: 'کف هفتهٔ قبل (PWL)',
   SESSION_HIGH: 'سقف جلسه',
   SESSION_LOW: 'کف جلسه',
   VOLUME_PROFILE_VAH: 'مرز بالای ارزش (VAH)',

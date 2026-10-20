@@ -12,6 +12,7 @@ import {
   SessionLiquiditySummary,
   VolumeMetrics,
 } from '../src/types/market';
+import { makeStructure, makeMtf } from './fixtures';
 
 function buildInputs(klines = makeKlines([
   { open: 95_000, high: 95_400, low: 94_600, close: 95_000 },
@@ -60,14 +61,11 @@ function buildInputs(klines = makeKlines([
     },
   ];
 
-  const structure: MarketStructureSummary = {
+  const structure: MarketStructureSummary = makeStructure({
     trend: 'BULLISH',
-    lastEvent: null,
-    events: [],
+    candleCount: 60,
     swingHighs: [{ index: 12, time: klines[0].timestamp - 2_700_000, price: 96_200, type: 'SWING_HIGH', confirmedAt: 14, strength: 80 }],
     swingLows: [{ index: 9, time: klines[0].timestamp - 3_600_000, price: 94_800, type: 'SWING_LOW', confirmedAt: 11, strength: 88 }],
-    fvgs: [],
-    orderBlocks: [],
     displacementDetected: true,
     recentMSS: {
       type: 'MSS',
@@ -79,8 +77,7 @@ function buildInputs(klines = makeKlines([
       strength: 90,
       displacement: true,
     },
-    recentBOS: null,
-  };
+  });
 
   const sessions: SessionLiquiditySummary = {
     currentSession: 'London',
@@ -129,13 +126,12 @@ function buildInputs(klines = makeKlines([
     timestamp: Date.now(),
   };
 
-  const mtf: MTFAnalysis = {
-    timeframes: {} as MTFAnalysis['timeframes'],
+  const mtf: MTFAnalysis = makeMtf({
     alignmentScore: 86,
     htfTrend: 'BULLISH',
     ltfConfirmation: true,
     confluenceDescription: 'هم‌راستایی صعودی',
-  };
+  });
 
   const regime: MarketRegime = {
     regime: 'TRENDING_BULLISH',

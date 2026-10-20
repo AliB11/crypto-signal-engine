@@ -1,159 +1,207 @@
-import { Kline, Ticker24h, DerivativesData, CoinMetadata, Timeframe } from '../types/market';
-import { MarketDataProvider } from './MarketDataProvider';
+import { CoinMetadata } from '../types/market';
 
-export class CoinGeckoProvider implements MarketDataProvider {
+/**
+ * کلاینت «فرادادهٔ بازار» کوین‌گکو — فقط همان چیزی که کوین‌گکو واقعاً می‌دهد.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * نسخهٔ قبلی این کلاس یک `MarketDataProvider` کامل بود که هیچ‌جا استفاده نمی‌شد
+ * (کد مرده) و در عین حال دادهٔ ساختگی تولید می‌کرد:
+ *
+ *   • `getTicker24h` مقدار `highPrice = price × 1.02` و `lowPrice = price × 0.98`
+ *     می‌ساخت؛ یعنی سقف/کف ۲۴ساعتهٔ کاملاً جعلی.
+ *   • `getDerivativesData` فاندینگ ثابت `0.0001` و سالانهٔ `10.95%` و نسبت
+ *     لانگ/شورت `1.0` برمی‌گرداند، بدون هیچ `isSimulated`.
+ *   • `getKlines` برای هر نمادِ ناشناخته بی‌صدا دادهٔ **بیت‌کوین** را برمی‌گرداند
+ *     و حجم را `0` می‌گذاشت.
+ *   • `getMetadata` در نبود رتبه، عدد `50` را به‌عنوان رتبهٔ بازار گزارش می‌کرد.
+ *
+ * کوین‌گکو نه کندل با حجم می‌دهد، نه دادهٔ مشتقات. بنابراین این ماژول اکنون فقط
+ * «فراداده» می‌خواند و برای هر چیزی که واقعاً در دسترس نیست `null` برمی‌گرداند —
+ * نه عدد حدسی. خروجی برای یک ساعت نهان می‌شود و تنها یک درخواست شبکه می‌زند.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
+const COINGECKO_HOST = 'https://api.coingecko.com';
+/**
+ * کلید رایگان (Demo) کوین‌گکو.
+ *
+ * بدون کلید، لایهٔ ناشناس کوین‌گکو محدودیت نرخ سخت‌گیرانه‌ای دارد و چون فرادادهٔ
+ * بازار (نام، رتبه، ارزش بازار) اکنون تنها از همین‌جا می‌آید، یک پاسخ `429`
+ * یعنی «نام و رتبهٔ هیچ ارزی را نداریم». تنظیم `COINGECKO_API_KEY` این کلید را
+ * در سرآیند `x-cg-demo-api-key` می‌فرستد. این متغیر پیش‌تر فقط در `.env.example`
+ * مستند شده بود ولی هیچ‌جا خوانده نمی‌شد.
+ */
+function coingeckoApiKey(): string | null {
+  const key =
+    typeof process !== 'undefined' && process.env
+      ? (process.env.COINGECKO_API_KEY ?? '').trim()
+      : '';
+  return key.length > 0 ? key : null;
+}
+const REQUEST_TIMEOUT_MS = 4000;
+/** فهرست بازار برای یک ساعت معتبر است (رتبه/ارزش بازار دقیقه‌ای تغییر نمی‌کند) */
+const MARKETS_TTL_MS = 60 * 60_000;
+/** سقف تعداد دارایی‌هایی که در یک درخواست فهرست بازار خوانده می‌شود */
+const MARKETS_PER_PAGE = 250;
+const MARKETS_MAX_PAGES = 2;
+
+export interface CoinGeckoMarket {
+  id: string;
+  symbol: string;
+  name: string;
+  marketCapRank: number | null;
+  marketCapUSD: number | null;
+  volume24hUSD: number | null;
+  priceChange24h: number | null;
+}
+
+export class CoinGeckoProvider {
   readonly name = 'coingecko';
-  private baseUrl = 'https://api.coingecko.com/api/v3';
+  private readonly baseUrl = `${COINGECKO_HOST}/api/v3`;
 
-  // Mapping from USDT pairs to CoinGecko IDs
-  private symbolMap: Record<string, string> = {
-    BTCUSDT: 'bitcoin',
-    ETHUSDT: 'ethereum',
-    BNBUSDT: 'binancecoin',
-    SOLUSDT: 'solana',
-    XRPUSDT: 'ripple',
-    DOGEUSDT: 'dogecoin',
-    ADAUSDT: 'cardano',
-    AVAXUSDT: 'avalanche-2',
-    LINKUSDT: 'chainlink',
-    DOTUSDT: 'polkadot',
-    SUIUSDT: 'sui',
-    NEARUSDT: 'near',
-    APTUSDT: 'aptos',
-    PEPEUSDT: 'pepe',
-    SHIBUSDT: 'shiba-inu',
-  };
+  /** نگاشت تیکر (بدون پسوند) → فرادادهٔ واقعی بازار */
+  private marketsBySymbol = new Map<string, CoinGeckoMarket>();
+  private fetchedAt = 0;
+  /** درخواست در حال پرواز تا چند فراخوانی هم‌زمان، چند درخواست شبکه نزنند */
+  private inflight: Promise<void> | null = null;
+  private lastError: string | null = null;
 
-  async getKlines(symbol: string, timeframe: Timeframe, limit = 100): Promise<Kline[]> {
-    const coinId = this.symbolMap[symbol.toUpperCase()] || 'bitcoin';
-    try {
-      const days = timeframe === '1d' ? '30' : timeframe === '4h' ? '7' : '1';
-      const res = await fetch(`${this.baseUrl}/coins/${coinId}/ohlc?vs_currency=usd&days=${days}`, {
-        headers: { 'Accept': 'application/json' },
-      });
-
-      if (!res.ok) throw new Error(`CoinGecko OHLC error: ${res.status}`);
-      const raw = (await res.json()) as number[][];
-
-      return raw.slice(-limit).map((c) => ({
-        timestamp: c[0],
-        open: c[1],
-        high: c[2],
-        low: c[3],
-        close: c[4],
-        volume: 0,
-        closeTime: c[0] + 60000,
-        quoteVolume: 0,
-        trades: 0,
-        takerBuyBaseVolume: 0,
-        takerBuyQuoteVolume: 0,
-      }));
-    } catch {
-      return [];
-    }
+  /** آخرین خطای شبکهٔ ثبت‌شده (برای `/api/health`) */
+  getLastError(): string | null {
+    return this.lastError;
   }
 
-  async getTicker24h(symbol: string): Promise<Ticker24h> {
-    const coinId = this.symbolMap[symbol.toUpperCase()] || 'bitcoin';
-    try {
-      const res = await fetch(
-        `${this.baseUrl}/simple/price?ids=${coinId}&vs_currencies=usd&include_24hr_vol=true&include_24hr_change=true`
-      );
-      if (!res.ok) throw new Error('CoinGecko price fetch failed');
-      const data = await res.json();
-      const coin = data[coinId];
-
-      const price = coin?.usd || 0;
-      const change = coin?.usd_24h_change || 0;
-      const vol = coin?.usd_24h_vol || 0;
-
-      return {
-        symbol: symbol.toUpperCase(),
-        priceChange: (price * change) / 100,
-        priceChangePercent: change,
-        lastPrice: price,
-        highPrice: price * 1.02,
-        lowPrice: price * 0.98,
-        volume: vol / price,
-        quoteVolume: vol,
-        openPrice: price - (price * change) / 100,
-        closeTime: Date.now(),
-      };
-    } catch {
-      return {
-        symbol: symbol.toUpperCase(),
-        priceChange: 0,
-        priceChangePercent: 0,
-        lastPrice: 0,
-        highPrice: 0,
-        lowPrice: 0,
-        volume: 0,
-        quoteVolume: 0,
-        openPrice: 0,
-        closeTime: Date.now(),
-      };
-    }
+  /** آیا کلید API تنظیم شده است؟ (برای شفافیت در `/api/health`) */
+  hasApiKey(): boolean {
+    return coingeckoApiKey() !== null;
   }
 
-  async getMultiTimeframeKlines(
-    symbol: string,
-    timeframes: Timeframe[],
-    limit = 100
-  ): Promise<Record<Timeframe, Kline[]>> {
-    const map: Partial<Record<Timeframe, Kline[]>> = {};
-    for (const tf of timeframes) {
-      map[tf] = await this.getKlines(symbol, tf, limit);
-    }
-    return map as Record<Timeframe, Kline[]>;
+  /** زمان آخرین واکشی موفق فهرست بازار (برای شفافیت) */
+  getMarketsFetchedAt(): number {
+    return this.fetchedAt;
   }
 
-  async getDerivativesData(symbol: string): Promise<DerivativesData> {
+  /**
+   * فرادادهٔ واقعی یک نماد (رتبه، ارزش بازار، حجم ۲۴ساعته).
+   * اگر فهرست بازار در دسترس نباشد `null` برمی‌گرداند — هرگز عدد حدسی.
+   */
+  async getMetadata(symbol: string): Promise<CoinMetadata | null> {
+    const base = symbol.toUpperCase().replace(/USDT$/, '').replace(/[^A-Z0-9]/g, '');
+    if (!base) return null;
+
+    await this.ensureMarkets();
+    const market = this.marketsBySymbol.get(base);
+    if (!market) return null;
+
     return {
+      id: market.id,
       symbol: symbol.toUpperCase(),
-      openInterest: 0,
-      openInterestValueUSD: 0,
-      oiChange1hPercent: 0,
-      oiChange24hPercent: 0,
-      oiTrend: 'NEUTRAL',
-      fundingRate: 0.0001,
-      fundingRateAnnualizedPercent: 10.95,
-      fundingCategory: 'NEUTRAL',
-      globalLongShortRatio: 1.0,
-      topTraderLongShortRatio: 1.0,
-      topTraderPositionRatio: 1.0,
-      positioning: 'BALANCED',
-      takerBuySellRatio: 1.0,
-      timestamp: Date.now(),
+      name: market.name,
+      rank: market.marketCapRank,
+      marketCapUSD: market.marketCapUSD,
+      volume24hUSD: market.volume24hUSD,
+      priceChange24h: market.priceChange24h,
+      source: 'coingecko',
+      isLiveMetadata: true,
     };
   }
 
-  async getMetadata(symbol: string): Promise<CoinMetadata | null> {
-    const coinId = this.symbolMap[symbol.toUpperCase()];
-    if (!coinId) return null;
+  /** نام واقعی دارایی از فهرست بازار کوین‌گکو (بدون هیچ جدول دستی) */
+  getName(baseSymbol: string): string | null {
+    return this.marketsBySymbol.get(baseSymbol.toUpperCase())?.name ?? null;
+  }
 
+  /**
+   * واکشی فهرست بازار واقعی (صفحه‌بندی‌شده) و ساخت نگاشت تیکر → فراداده.
+   * هم‌زمان با پاسخ جاری اجرا می‌شود؛ در صورت شکست، نگاشت قبلی دست‌نخورده می‌ماند.
+   */
+  async ensureMarkets(force = false): Promise<void> {
+    if (!force && this.fetchedAt > 0 && Date.now() - this.fetchedAt < MARKETS_TTL_MS) return;
+    if (this.inflight) return this.inflight;
+
+    this.inflight = (async () => {
+      try {
+        const next = new Map<string, CoinGeckoMarket>();
+        for (let page = 1; page <= MARKETS_MAX_PAGES; page++) {
+          const rows = await this.fetchPage(page);
+          if (rows.length === 0) break;
+          for (const row of rows) {
+            const ticker = (row.symbol || '').toUpperCase();
+            if (!ticker) continue;
+            // در صورت تکرار تیکر، دارایی با رتبهٔ بهتر نگه داشته می‌شود
+            const existing = next.get(ticker);
+            if (!existing || rankBetter(row.marketCapRank, existing.marketCapRank)) {
+              next.set(ticker, row);
+            }
+          }
+          if (rows.length < MARKETS_PER_PAGE) break;
+        }
+
+        if (next.size > 0) {
+          this.marketsBySymbol = next;
+          this.fetchedAt = Date.now();
+          this.lastError = null;
+        }
+      } catch (err) {
+        this.lastError = err instanceof Error ? err.message : String(err);
+      } finally {
+        this.inflight = null;
+      }
+    })();
+
+    return this.inflight;
+  }
+
+  private async fetchPage(page: number): Promise<CoinGeckoMarket[]> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-      const res = await fetch(
-        `${this.baseUrl}/coins/${coinId}?localization=false&tickers=false&community_data=false&developer_data=false`
-      );
-      if (!res.ok) return null;
-      const data = await res.json();
+      const url =
+        `${this.baseUrl}/coins/markets?vs_currency=usd&order=market_cap_desc` +
+        `&per_page=${MARKETS_PER_PAGE}&page=${page}&price_change_percentage=24h`;
+      const apiKey = coingeckoApiKey();
+      const res = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'CryptoSignalScanner/1.2',
+          ...(apiKey ? { 'x-cg-demo-api-key': apiKey } : {}),
+        },
+      });
+      if (!res.ok) throw new Error(`CoinGecko markets HTTP ${res.status}`);
+      const json = (await res.json()) as {
+        id?: string;
+        symbol?: string;
+        name?: string;
+        market_cap_rank?: number | null;
+        market_cap?: number | null;
+        total_volume?: number | null;
+        price_change_percentage_24h?: number | null;
+      }[];
+      if (!Array.isArray(json)) return [];
 
-      return {
-        id: data.id,
-        symbol: symbol.toUpperCase(),
-        name: data.name,
-        rank: data.market_cap_rank || 50,
-        marketCapUSD: data.market_data?.market_cap?.usd || 0,
-        volume24hUSD: data.market_data?.total_volume?.usd || 0,
-        priceChange24h: data.market_data?.price_change_percentage_24h || 0,
-        source: 'coingecko',
-      };
-    } catch {
-      return null;
+      return json
+        .filter((row) => typeof row.symbol === 'string')
+        .map((row) => ({
+          id: String(row.id ?? row.symbol ?? '').toLowerCase(),
+          symbol: String(row.symbol ?? '').toUpperCase(),
+          name: String(row.name ?? row.symbol ?? ''),
+          marketCapRank: toFiniteOrNull(row.market_cap_rank),
+          marketCapUSD: toFiniteOrNull(row.market_cap),
+          volume24hUSD: toFiniteOrNull(row.total_volume),
+          priceChange24h: toFiniteOrNull(row.price_change_percentage_24h),
+        }));
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
+}
 
-  async getTopSymbols(count = 25): Promise<string[]> {
-    return Object.keys(this.symbolMap).slice(0, count);
-  }
+function toFiniteOrNull(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function rankBetter(a: number | null, b: number | null): boolean {
+  if (a === null) return false;
+  if (b === null) return true;
+  return a < b;
 }

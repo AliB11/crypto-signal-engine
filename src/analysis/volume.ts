@@ -85,13 +85,20 @@ export function analyzeVolume(klines: Kline[], binCount = 40): VolumeMetrics {
       });
     }
 
-    // Distribute each candle's volume across intersected bins
+    // Distribute each candle's volume across intersected bins.
+    //
+    // تفکیک خرید/فروش هر بین *فقط* از دادهٔ واقعی تیکر همان کندل
+    // (`takerBuyBaseVolume`) می‌آید. نسخهٔ قبلی در نبود این ستون — و حتی در حضور
+    // آن — یک تقسیم ساختگی ۶۵/۳۵ بر پایهٔ رنگ کندل می‌ساخت که هیچ مبنای داده‌ای
+    // نداشت؛ حالا وقتی جریان تیکر موجود نباشد، buyVolume/sellVolume صفر می‌مانند
+    // و `hasTickFlowData` این وضعیت را اعلام می‌کند.
     let totalProfileVolume = 0;
     for (const k of profileKlines) {
       const kHigh = k.high;
       const kLow = k.low;
       const kVol = k.volume;
-      const isBullish = k.close >= k.open;
+      const kTakerBuy = hasTickFlowData ? Math.max(0, Math.min(kVol, k.takerBuyBaseVolume || 0)) : 0;
+      const buyShare = kVol > 0 ? kTakerBuy / kVol : 0;
 
       const startBin = Math.max(0, Math.floor((kLow - minPrice) / binSize));
       const endBin = Math.min(binCount - 1, Math.floor((kHigh - minPrice) / binSize));
@@ -100,13 +107,8 @@ export function analyzeVolume(klines: Kline[], binCount = 40): VolumeMetrics {
 
       for (let b = startBin; b <= endBin; b++) {
         bins[b].volume += volPerBin;
-        if (isBullish) {
-          bins[b].buyVolume += volPerBin * 0.65;
-          bins[b].sellVolume += volPerBin * 0.35;
-        } else {
-          bins[b].buyVolume += volPerBin * 0.35;
-          bins[b].sellVolume += volPerBin * 0.65;
-        }
+        bins[b].buyVolume += volPerBin * buyShare;
+        bins[b].sellVolume += volPerBin * (1 - buyShare);
         totalProfileVolume += volPerBin;
       }
     }

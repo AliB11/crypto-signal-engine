@@ -252,20 +252,25 @@ export function testLiquidityMagnets() {
 
   // کشش صعودی: وزن سطوح بالایی غالب است
   const upDraw = computeLiquidityDraw([makeLevel(120, 90), makeLevel(115, 90), makeLevel(95, 40)], 100);
-  if (upDraw.direction !== 'UP' || upDraw.upPercent < 60) {
+  if (upDraw.direction !== 'UP' || upDraw.upPercent === null || upDraw.upPercent < 60) {
     throw new Error(`Upward liquidity draw not detected: ${upDraw.direction} (${upDraw.upPercent}%)`);
   }
 
   // کشش نزولی
   const downDraw = computeLiquidityDraw([makeLevel(120, 20), makeLevel(95, 90), makeLevel(90, 90)], 100);
-  if (downDraw.direction !== 'DOWN' || downDraw.upPercent >= 40) {
+  if (downDraw.direction !== 'DOWN' || downDraw.upPercent === null || downDraw.upPercent >= 40) {
     throw new Error(`Downward liquidity draw not detected: ${downDraw.direction} (${downDraw.upPercent}%)`);
   }
 
-  // بدون سطح دست‌نخورده => متعادل
+  // بدون سطح دست‌نخورده => متعادل و «بدون سهم اندازه‌گیری‌شده».
+  // پیش‌تر upPercent در این حالت عدد ساختگی ۵۰ بود و «تقسیم متوازن نقدینگی»
+  // به نظر می‌رسید در حالی که هیچ سطحی برای سنجش وجود نداشت.
   const flat = computeLiquidityDraw([makeLevel(120, 90, true), makeLevel(100, 99)], 100);
   if (flat.direction !== 'BALANCED' || flat.unsweptCount !== 0 || flat.upWeight !== 0) {
     throw new Error('Draw must stay balanced when no meaningful unswept level exists');
+  }
+  if (flat.upPercent !== null) {
+    throw new Error(`Draw share must be null (not a fabricated 50) when there is no data, got ${flat.upPercent}`);
   }
 
   console.log('✓ Liquidity magnets passed (nearest untapped levels + weighted draw direction).');

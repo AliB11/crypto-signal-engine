@@ -115,6 +115,14 @@ export interface StructureEvent {
 
 export interface MarketStructureSummary {
   trend: 'BULLISH' | 'BEARISH' | 'RANGING';
+  /**
+   * آیا دادهٔ کافی برای تحلیل ساختار وجود داشت؟
+   * وقتی `false` است، `trend: 'RANGING'` یک نتیجهٔ اندازه‌گیری‌شده نیست بلکه
+   * «نمی‌دانیم» است و مصرف‌کننده باید آن را بی‌اثر کند (نه به‌عنوان بازار رنج).
+   */
+  available: boolean;
+  /** تعداد کندل‌هایی که واقعاً در دسترس بود */
+  candleCount: number;
   lastEvent: StructureEvent | null;
   events: StructureEvent[];
   swingHighs: SwingPoint[];
@@ -208,7 +216,30 @@ export interface DerivativesData {
    * رابط کاربری موظف است این وضعیت را شفاف نمایش دهد.
    */
   isSimulated?: boolean;
+  /**
+   * فیلدهایی که از API واقعی خوانده *نشده*اند.
+   *
+   * پیش‌تر وقتی فقط بخشی از endpointهای آتی پاسخ می‌دادند، بقیهٔ فیلدها با مقدار
+   * خنثی پیش‌فرض (LSR=1، فاندینگ=0، نسبت تیکر=1) پر می‌شدند و شیء با
+   * `isSimulated: false` برمی‌گشت؛ یعنی «دادهٔ ساختگی» با برچسب «دادهٔ زنده».
+   * اکنون هر فیلدِ نخوانده در این فهرست گزارش می‌شود تا لایهٔ امتیازدهی آن را
+   * نادیده بگیرد و رابط کاربری «—» نشان دهد.
+   */
+  missingFields?: DerivativesField[];
+  /** فاصلهٔ واقعی فاندینگ این نماد (ساعت) — از `/fapi/v1/fundingInfo` خوانده می‌شود */
+  fundingIntervalHours?: number | null;
 }
+
+/** فیلدهای دادهٔ مشتقات که می‌توانند مستقل از هم در دسترس/غایب باشند */
+export type DerivativesField =
+  | 'openInterest'
+  | 'openInterestValueUSD'
+  | 'fundingRate'
+  | 'oiChange1hPercent'
+  | 'oiChange24hPercent'
+  | 'globalLongShortRatio'
+  | 'topTraderPositionRatio'
+  | 'takerBuySellRatio';
 
 /** آمار داخلی پروایدر داده — برای شفافیت منبع داده و عیب‌یابی */
 export interface DataProviderStats {
@@ -236,7 +267,30 @@ export interface DataProviderStats {
   openBreakers: string[];
 }
 
+/**
+ * شمارندهٔ «منبع داده» در سطح یک درخواست واحد.
+ *
+ * پیش‌تر کیفیت داده از اختلاف آمار *سراسری* پروایدر محاسبه می‌شد؛ در محیط سرورلس
+ * که یک نمونه بین درخواست‌ها زنده می‌ماند، دو درخواست هم‌زمان شمارندهٔ یکدیگر را
+ * آلوده می‌کردند و `dataQuality` می‌توانست منبع اشتباهی گزارش دهد. این شیء به ازای
+ * هر تحلیل/اسکن ساخته می‌شود و فقط همان درخواست را می‌شمارد.
+ */
+export interface DataTrace {
+  live: number;
+  simulated: number;
+}
+
 /** کیفیت منبع داده در یک پاسخ مشخص (شفافیت برای کاربر) */
+/**
+ * منبع دادهٔ یک پاسخ.
+ *
+ * `mixed` یعنی بخشی از فراخوانی‌ها زنده و بخشی شبیه‌سازی‌شده بود. پیش‌تر این
+ * حالت به `simulated` فروکاسته می‌شد و رابط کاربری «بدون دسترسی به بایننس»
+ * می‌نوشت، در حالی که بایننس برای بیشتر فراخوانی‌ها پاسخ داده بود — یعنی یک
+ * ادعای نادرست به کاربر نشان داده می‌شد.
+ */
+export type DataSource = 'live' | 'simulated' | 'mixed';
+
 export interface DataQualityInfo {
   source: 'live' | 'simulated' | 'mixed';
   /** نسبت فراخوانی‌های زنده در طول این درخواست (۰ تا ۱) */
@@ -274,14 +328,24 @@ export interface MarketRegime {
 
 export interface TimeframeAnalysis {
   timeframe: Timeframe;
-  trend: 'BULLISH' | 'BEARISH' | 'RANGING';
-  structureScore: number; // 0-100
+  /** آیا کندل کافی برای این تایم‌فریم وجود داشت؟ `false` = تحلیل انجام نشد */
+  available: boolean;
+  /** تعداد کندل‌های در دسترس برای این تایم‌فریم */
+  candleCount: number;
+  /** 'UNKNOWN' وقتی داده‌ای برای سنجش وجود ندارد (جایگزین 'RANGING' ساختگی) */
+  trend: 'BULLISH' | 'BEARISH' | 'RANGING' | 'UNKNOWN';
+  /**
+   * امتیاز ساختار ۰ تا ۱۰۰.
+   * `null` وقتی داده‌ای وجود ندارد — پیش‌تر عدد ساختگی ۵۰ («خنثی») گزارش می‌شد
+   * که «تایم‌فریم خنثی است» را با «داده‌ای نداریم» یکسان نشان می‌داد.
+   */
+  structureScore: number | null;
   lastMSS: StructureEvent | null;
   lastBOS: StructureEvent | null;
   sweeps: LiquiditySweep[];
   fvgCount: number;
   orderBlockCount: number;
-  volumeState: 'EXPANSION' | 'CONTRACTION' | 'NORMAL';
+  volumeState: 'EXPANSION' | 'CONTRACTION' | 'NORMAL' | 'UNKNOWN';
 }
 
 export interface MTFAnalysis {
@@ -290,6 +354,12 @@ export interface MTFAnalysis {
   htfTrend: 'BULLISH' | 'BEARISH' | 'NEUTRAL'; // Based on 1D/4H/1H
   ltfConfirmation: boolean; // Based on 15m/5m/1m MSS & Sweeps
   confluenceDescription: string;
+  /** تایم‌فریم‌هایی که واقعاً تحلیل شدند (دادهٔ کافی داشتند) */
+  analyzedTimeframes: Timeframe[];
+  /** چند تایم‌فریم بالاتر از ۳ تایم‌فریم مرجع (1d/4h/1h) داده داشتند */
+  htfAnalyzedCount: number;
+  /** تعداد کل تایم‌فریم‌های مرجع بالاتر (همیشه ۳) */
+  htfTotal: number;
 }
 
 export interface Layer3Analysis {
@@ -298,8 +368,10 @@ export interface Layer3Analysis {
     swingLowsCount: number;
     equalHighs: LiquidityLevel[];
     equalLows: LiquidityLevel[];
-    pdhDistancePercent: number;
-    pdlDistancePercent: number;
+    /** فاصله تا سقف روز قبل؛ `null` یعنی سطح در دادهٔ موجود تولید نشده است */
+    pdhDistancePercent: number | null;
+    /** فاصله تا کف روز قبل؛ `null` یعنی سطح در دادهٔ موجود تولید نشده است */
+    pdlDistancePercent: number | null;
     score: number;
   };
   layer2StructuralLiquidity: {
@@ -355,6 +427,8 @@ export type TradeTargetSource =
   | 'SWING_LOW'
   | 'PREVIOUS_DAY_HIGH'
   | 'PREVIOUS_DAY_LOW'
+  | 'PREVIOUS_WEEK_HIGH'
+  | 'PREVIOUS_WEEK_LOW'
   | 'SESSION_HIGH'
   | 'SESSION_LOW'
   | 'VOLUME_PROFILE_VAH'
@@ -417,12 +491,22 @@ export interface Signal {
 export interface CoinMetadata {
   id: string;
   symbol: string;
+  /** نام دارایی؛ اگر از هیچ منبع واقعی خوانده نشود، همان تیکر است */
   name: string;
-  rank: number;
-  marketCapUSD: number;
-  volume24hUSD: number;
-  priceChange24h: number;
+  /**
+   * رتبهٔ ارزش بازار. `null` یعنی «نامشخص» — نه صفر و نه یک عدد حدسی.
+   * (پیش‌تر یک جدول دستیِ رتبه در کد سخت‌کد شده بود که به‌سرعت کهنه و نادرست می‌شد.)
+   */
+  rank: number | null;
+  marketCapUSD: number | null;
+  volume24hUSD: number | null;
+  priceChange24h: number | null;
   source: 'binance' | 'coingecko';
+  /**
+   * منبعِ فهرست واقعی رتبه/ارزش بازار در دسترس بود؟
+   * `false` یعنی فقط نام از تیکر مشتق شده و هیچ عدد بازاری گزارش نمی‌شود.
+   */
+  isLiveMetadata?: boolean;
 }
 
 export interface FullAnalysisResult {
@@ -444,7 +528,7 @@ export interface FullAnalysisResult {
   dataTimestamp: number;
   analysisTimestamp: number;
   /** زنده بودن داده‌ها: اگر پروایدر به داده شبیه‌سازی‌شده پناه برده باشد 'simulated' است */
-  dataSource?: 'live' | 'simulated';
+  dataSource?: DataSource;
   /** جزئیات کیفیت دادهٔ همین پاسخ (نسبت فراخوانی‌های زنده) */
   dataQuality?: DataQualityInfo;
   /** زمان اجرای کامل خط لوله به میلی‌ثانیه (برای پایش کارایی) */
@@ -473,7 +557,11 @@ export interface BacktestTrade {
   tp3: number;
   exitTime: number;
   exitPrice: number;
-  exitReason: 'TP1' | 'TP2' | 'TP3' | 'STOP_LOSS' | 'TIMEOUT';
+  /**
+   * `END_OF_DATA` یعنی معامله در پایان بازهٔ داده هنوز باز بود و با قیمت بستهٔ
+   * آخرین کندل بسته شد (پیش‌تر چنین معامله‌ای بی‌صدا از آمار حذف می‌شد).
+   */
+  exitReason: 'TP1' | 'TP2' | 'TP3' | 'STOP_LOSS' | 'TIMEOUT' | 'END_OF_DATA';
   pnlPercent: number;
   rrRealized: number;
   status: 'WIN' | 'LOSS';
@@ -490,7 +578,11 @@ export interface BacktestMetrics {
   losingTrades: number;
   winRate: number; // %
   lossRate: number; // %
-  profitFactor: number;
+  /**
+   * سود ناخالص ÷ زیان ناخالص. `null` وقتی هیچ معاملهٔ زیان‌دهی وجود نداشته باشد
+   * (پیش‌تر عدد ساختگی ۹۹٫۹۹ گزارش می‌شد که در رابط کاربری یک عدد واقعی به نظر می‌رسید).
+   */
+  profitFactor: number | null;
   /** انتظار ریاضی هر معامله بر حسب واحد ریسک (R) */
   expectancy: number;
   maxDrawdownPercent: number;
@@ -529,6 +621,11 @@ export interface BacktestReport {
   walkForward: WalkForwardResult;
   failureBreakdown: FalseSignalBreakdown;
   trades: BacktestTrade[];
-  /** فرض‌های شفاف شبیه‌سازی (برای جلوگیری از تفسیر نادرست نتایج) */
-  assumptions?: string[];
+  /**
+   * فرض‌های شفاف بک‌تست (کارمزد، اسلیپیج، زمان ورود، نحوهٔ بستن معاملهٔ باز).
+   * عمداً *اجباری* است: `runBacktest` همیشه آن را پر می‌کند و اجباری بودنش
+   * مصرف‌کننده را مجبور می‌کند آن را به کاربر نشان دهد، نه اینکه نتایج را
+   * بدون ذکر همان فرض‌ها ارائه کند.
+   */
+  assumptions: string[];
 }

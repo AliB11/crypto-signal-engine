@@ -83,7 +83,7 @@ export const LiquidityMagnetLadder: React.FC<Props> = ({ levels, currentPrice })
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between text-[11px] font-semibold">
           <span className="text-rose-300">
-            کشش به سمت بالا ({toFaDigits(draw.upPercent)}٪)
+            کشش به سمت بالا ({draw.upPercent === null ? '—' : `${toFaDigits(draw.upPercent)}٪`})
           </span>
           <span
             className={`px-2 py-0.5 rounded-full border text-[10px] ${
@@ -101,14 +101,18 @@ export const LiquidityMagnetLadder: React.FC<Props> = ({ levels, currentPrice })
               : 'کشش متعادل'}
           </span>
           <span className="text-emerald-300">
-            کشش به سمت پایین ({toFaDigits(100 - draw.upPercent)}٪)
+            کشش به سمت پایین (
+            {draw.upPercent === null ? '—' : `${toFaDigits(100 - draw.upPercent)}٪`})
           </span>
         </div>
         <div className="w-full h-2 rounded-full overflow-hidden bg-slate-950 border border-slate-800 flex" dir="ltr">
-          <div className="h-full bg-rose-500/80 transition-all duration-700" style={{ width: `${draw.upPercent}%` }} />
+          <div
+            className="h-full bg-rose-500/80 transition-all duration-700"
+            style={{ width: `${draw.upPercent ?? 0}%` }}
+          />
           <div
             className="h-full bg-emerald-500/80 transition-all duration-700"
-            style={{ width: `${100 - draw.upPercent}%` }}
+            style={{ width: `${draw.upPercent === null ? 0 : 100 - draw.upPercent}%` }}
           />
         </div>
       </div>

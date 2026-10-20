@@ -21,6 +21,7 @@ import { formatPrice, formatSignedPercent } from '@/lib/format';
 import {
   faCoinName,
   faLabel,
+  FA_FUNDING_CATEGORY,
   FA_TARGET_SOURCE,
   FA_STOP_BASIS,
   FA_ENTRY_TYPE,
@@ -62,6 +63,31 @@ export const CoinAnalyzer: React.FC<Props> = ({
 
   const tradePlan = signal.tradePlan;
   const [copied, setCopied] = useState(false);
+
+  /** مؤلفه‌های مشتقاتی که واقعاً از API خوانده نشده‌اند (شبیه‌سازی = همه) */
+  const derivMissing = new Set(
+    derivatives.isSimulated
+      ? ([
+          'openInterest',
+          'openInterestValueUSD',
+          'fundingRate',
+          'oiChange1hPercent',
+          'oiChange24hPercent',
+          'globalLongShortRatio',
+          'topTraderPositionRatio',
+          'takerBuySellRatio',
+        ] as const)
+      : (derivatives.missingFields ?? [])
+  );
+  /**
+   * برچسب فاصلهٔ فاندینگ. `null` یعنی فهرست فواصل بایننس خوانده نشد و سالانه‌سازی
+   * با فاصلهٔ استاندارد ۸ساعته انجام شده است — این هم صریح گفته می‌شود.
+   */
+  const fundingIntervalLabel = derivMissing.has('fundingRate')
+    ? '—'
+    : derivatives.fundingIntervalHours
+    ? `${derivatives.fundingIntervalHours}ساعته`
+    : '۸ساعته (فرض)';
 
   const persianName = faCoinName(symbol, analysis.metadata?.name);
 
@@ -205,12 +231,20 @@ export const CoinAnalyzer: React.FC<Props> = ({
       </div>
 
       {/* هشدار کهنگی یا شبیه‌سازی بودن داده */}
-      {(analysis.dataSource === 'simulated' || signal.isStale) && (
+      {(analysis.dataSource === 'simulated' ||
+        analysis.dataSource === 'mixed' ||
+        signal.isStale) && (
         <div className="p-3.5 bg-amber-950/50 border border-amber-800/70 rounded-xl text-xs text-amber-300 flex items-center gap-2.5">
           <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
           <span>
             {analysis.dataSource === 'simulated'
               ? 'دسترسی به بایننس از این سرور برقرار نشد؛ داده‌های نمایش‌داده‌شده شبیه‌سازی‌شده هستند و برای تصمیم معاملاتی واقعی مناسب نیستند.'
+              : analysis.dataSource === 'mixed'
+              ? `بخشی از داده‌های این تحلیل از موتور شبیه‌سازی آمده است${
+                  analysis.dataQuality
+                    ? ` (نسبت دادهٔ زنده: ${Math.round(analysis.dataQuality.liveRatio * 100)}٪)`
+                    : ''
+                }. پیش از تصمیم معاملاتی، منبع داده را بررسی کنید.`
               : 'جریان داده دارای تأخیر است؛ پیش از تصمیم‌گیری، قیمت لحظه‌ای را بررسی کنید.'}
           </span>
         </div>
@@ -227,7 +261,7 @@ export const CoinAnalyzer: React.FC<Props> = ({
             tradePlan={tradePlan}
             timeframe={timeframe}
             symbol={symbol}
-            dataSource={analysis.dataSource === 'simulated' ? 'simulated' : 'live'}
+            dataSource={analysis.dataSource ?? 'live'}
           />
         </div>
 
@@ -442,13 +476,17 @@ export const CoinAnalyzer: React.FC<Props> = ({
               <div className="flex justify-between">
                 <span className="text-slate-400">فاصله تا سقف روز قبل:</span>
                 <span className="font-mono text-slate-100 num">
-                  {layer3.layer1BasicLiquidity.pdhDistancePercent}%
+                  {layer3.layer1BasicLiquidity.pdhDistancePercent === null
+                    ? '—'
+                    : `${layer3.layer1BasicLiquidity.pdhDistancePercent}%`}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">فاصله تا کف روز قبل:</span>
                 <span className="font-mono text-slate-100 num">
-                  {layer3.layer1BasicLiquidity.pdlDistancePercent}%
+                  {layer3.layer1BasicLiquidity.pdlDistancePercent === null
+                    ? '—'
+                    : `${layer3.layer1BasicLiquidity.pdlDistancePercent}%`}
                 </span>
               </div>
             </div>
@@ -580,12 +618,17 @@ export const CoinAnalyzer: React.FC<Props> = ({
           <div className="grid grid-cols-3 gap-3">
             {(
               [
-                { key: 'asian', title: 'آسیا', hours: '00:00 - 08:00 UTC' },
-                { key: 'london', title: 'لندن', hours: '07:00 - 15:30 UTC' },
-                { key: 'newYork', title: 'نیویورک', hours: '13:00 - 21:30 UTC' },
+                // ساعات از خودِ نتیجهٔ تحلیل خوانده می‌شود؛ پیش‌تر این سه برچسب در
+                // UI هاردکد بودند و با ساعات واقعی موتور نمی‌خواندند (لندن ۱۵:۳۰ و
+                // نیویورک ۲۱:۳۰ نوشته می‌شد، در حالی که موتور ۱۵:۰۰ و ۲۱:۰۰ مبنا بود).
+                { key: 'asian', title: 'آسیا' },
+                { key: 'london', title: 'لندن' },
+                { key: 'newYork', title: 'نیویورک' },
               ] as const
-            ).map(({ key, title, hours }) => {
+            ).map(({ key, title }) => {
               const sess = sessionLiquidity.sessions[key];
+              const pad = (h: number) => String(h).padStart(2, '0');
+              const hours = `${pad(sess.startHourUTC)}:00 - ${pad(sess.endHourUTC)}:00 UTC`;
               return (
                 <div
                   key={key}
@@ -652,10 +695,35 @@ export const CoinAnalyzer: React.FC<Props> = ({
               <Layers className="w-5 h-5 text-indigo-400" />
               <h3 className="font-bold text-slate-100 text-sm">مشتقات آتی و جریان سفارش‌ها</h3>
             </div>
-            <span className="text-xs px-2.5 py-1 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800">
-              فید آتی بایننس
+            <span
+              className={`text-xs px-2.5 py-1 rounded-full border ${
+                derivatives.isSimulated
+                  ? 'bg-amber-950 text-amber-300 border-amber-800'
+                  : (derivatives.missingFields?.length ?? 0) > 0
+                  ? 'bg-slate-800 text-slate-300 border-slate-700'
+                  : 'bg-indigo-950 text-indigo-300 border-indigo-800'
+              }`}
+            >
+              {derivatives.isSimulated
+                ? 'فید آتی در دسترس نیست — مقادیر شبیه‌سازی‌شده'
+                : (derivatives.missingFields?.length ?? 0) > 0
+                ? `فید آتی بایننس (نسبتی — ${derivatives.missingFields?.length} مؤلفه خوانده نشد)`
+                : 'فید آتی بایننس'}
             </span>
           </div>
+
+          {/*
+            شفافیت داده: هر مؤلفه‌ای که واقعاً از API خوانده نشده «—» نشان می‌دهد.
+            پیش‌تر مقادیر پیش‌فرض (LSR=1، فاندینگ=0، OI=0) زیر برچسب «فید آتی بایننس»
+            نمایش داده می‌شدند و دادهٔ ساختگی، واقعی به نظر می‌رسید.
+          */}
+          {(derivatives.isSimulated || (derivatives.missingFields?.length ?? 0) > 0) && (
+            <div className="mb-3 p-2.5 bg-amber-950/40 border border-amber-800/60 rounded-lg text-[11px] text-amber-300 leading-relaxed">
+              {derivatives.isSimulated
+                ? 'دادهٔ مشتقات از موتور شبیه‌سازی قطعی آمده است؛ این اعداد بازار واقعی نیستند و در امتیاز و جهت سیگنال اثری نداشته‌اند.'
+                : `مؤلفه‌های زیر از API آتی خوانده نشدند و در امتیاز لحاظ نشده‌اند: ${(derivatives.missingFields ?? []).join('، ')}`}
+            </div>
+          )}
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
             {/* روند قراردادهای باز */}
@@ -664,25 +732,41 @@ export const CoinAnalyzer: React.FC<Props> = ({
                 روند قراردادهای باز (OI)
               </span>
               <span className="font-bold text-slate-200 block">
-                {faLabel(FA_OI_TREND, derivatives.oiTrend)}
+                {derivMissing.has('oiChange1hPercent') ? '—' : faLabel(FA_OI_TREND, derivatives.oiTrend)}
               </span>
               <span className="text-[10px] text-emerald-400 font-mono mt-1 block num">
-                {formatSignedPercent(derivatives.oiChange1hPercent)} در ۱ ساعت
+                {derivMissing.has('oiChange1hPercent')
+                  ? 'خوانده نشد'
+                  : `${formatSignedPercent(derivatives.oiChange1hPercent)} در ۱ ساعت`}
               </span>
             </div>
 
             {/* فاندینگ ریت */}
             <div className="p-3 bg-slate-950/80 rounded-lg border border-slate-800">
-              <span className="text-[10px] text-slate-500 font-semibold block mb-1">فاندینگ (۸ساعته)</span>
+              <span className="text-[10px] text-slate-500 font-semibold block mb-1">
+                {/* فاصلهٔ فاندینگ از خودِ فید خوانده می‌شود؛ قبلاً «۸ساعته» هاردکد بود */}
+                فاندینگ ({fundingIntervalLabel})
+              </span>
               <span
                 className={`font-mono font-bold block num ${
-                  derivatives.fundingRate >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                  derivMissing.has('fundingRate')
+                    ? 'text-slate-500'
+                    : derivatives.fundingRate >= 0
+                    ? 'text-emerald-400'
+                    : 'text-rose-400'
                 }`}
               >
-                {(derivatives.fundingRate * 100).toFixed(4)}%
+                {derivMissing.has('fundingRate')
+                  ? '—'
+                  : `${(derivatives.fundingRate * 100).toFixed(4)}%`}
               </span>
               <span className="text-[10px] text-slate-400 font-mono mt-1 block num">
-                {derivatives.fundingRateAnnualizedPercent.toFixed(1)}% سالانه
+                {derivMissing.has('fundingRate')
+                  ? 'خوانده نشد'
+                  : `${derivatives.fundingRateAnnualizedPercent.toFixed(1)}% سالانه · ${faLabel(
+                      FA_FUNDING_CATEGORY,
+                      derivatives.fundingCategory
+                    )}`}
               </span>
             </div>
 
@@ -692,10 +776,17 @@ export const CoinAnalyzer: React.FC<Props> = ({
                 نسبت لانگ/شورت کل
               </span>
               <span className="font-mono font-bold text-cyan-400 block text-sm num">
-                {derivatives.globalLongShortRatio.toFixed(2)}
+                {derivMissing.has('globalLongShortRatio')
+                  ? '—'
+                  : derivatives.globalLongShortRatio.toFixed(2)}
               </span>
               <span className="text-[10px] text-slate-400 mt-1 block">
-                معامله‌گران برتر: <span className="num">{derivatives.topTraderLongShortRatio.toFixed(2)}</span>
+                معامله‌گران برتر:{' '}
+                <span className="num">
+                  {derivMissing.has('topTraderPositionRatio')
+                    ? '—'
+                    : derivatives.topTraderLongShortRatio.toFixed(2)}
+                </span>
               </span>
             </div>
 
@@ -704,10 +795,19 @@ export const CoinAnalyzer: React.FC<Props> = ({
               <span className="text-[10px] text-slate-500 font-semibold block mb-1">عدم تعادل تیکر</span>
               <span
                 className={`font-mono font-bold block num ${
-                  volumeMetrics.imbalance >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                  !volumeMetrics.hasTickFlowData
+                    ? 'text-slate-500'
+                    : volumeMetrics.imbalance >= 0
+                    ? 'text-emerald-400'
+                    : 'text-rose-400'
                 }`}
+                title={
+                  volumeMetrics.hasTickFlowData
+                    ? undefined
+                    : 'ستون حجم تیکر در منبع داده موجود نیست؛ عدم تعادل قابل اندازه‌گیری نیست'
+                }
               >
-                {formatSignedPercent(volumeMetrics.imbalance, 1)}
+                {volumeMetrics.hasTickFlowData ? formatSignedPercent(volumeMetrics.imbalance, 1) : '—'}
               </span>
               <span className="text-[10px] text-slate-400 mt-1 block">
                 RVOL: <span className="num">{volumeMetrics.rvol}x</span>
@@ -762,7 +862,9 @@ export const CoinAnalyzer: React.FC<Props> = ({
                   {faLabel(FA_TREND, data?.trend) || 'رِنج'}
                 </span>
                 <span className="text-[10px] text-slate-500 mt-1 block font-mono num">
-                  امتیاز: {data?.structureScore || 50}
+                  {/* «—» یعنی کندل کافی برای این تایم‌فریم وجود نداشت؛ پیش‌تر عدد ۵۰
+                      به‌عنوان امتیاز ساختار نمایش داده می‌شد */}
+                  امتیاز: {typeof data?.structureScore === 'number' ? data.structureScore : '—'}
                 </span>
               </div>
             );

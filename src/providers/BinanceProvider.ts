@@ -2,9 +2,11 @@ import {
   Kline,
   Ticker24h,
   DerivativesData,
+  DerivativesField,
   CoinMetadata,
   Timeframe,
   DataProviderStats,
+  DataTrace,
 } from '../types/market';
 import { MarketDataProvider } from './MarketDataProvider';
 import { isTimeframe } from '../lib/timeframes';
@@ -14,6 +16,27 @@ import {
   simulateTicker,
   SIM_BASE_PRICES,
 } from './simulation';
+import { CoinGeckoProvider } from './CoinGeckoProvider';
+import { annualizeFundingRate, DEFAULT_FUNDING_INTERVAL_HOURS } from '../lib/funding';
+import { FALLBACK_WATCHLIST } from '../config/engine';
+
+/**
+ * آیا در صورت قطع دسترسی به بایننس، موتور شبیه‌سازی مجاز به تولید داده باشد؟
+ *
+ * دادهٔ شبیه‌سازی‌شده هرگز به‌جای دادهٔ واقعی جا نمی‌زند (همه‌جا با
+ * `isSimulated` / `dataSource: 'simulated'` علامت‌گذاری می‌شود)، اما برای
+ * استقرارهایی که فقط دادهٔ واقعی می‌خواهند، با `DATA_SIMULATION_FALLBACK=off`
+ * به‌طور کامل خاموش می‌شود؛ در آن حالت پروایدر به‌جای عدد ساختگی خطا می‌دهد.
+ */
+function simulationFallbackEnabled(): boolean {
+  const flag = (
+    (typeof process !== 'undefined' && process.env?.DATA_SIMULATION_FALLBACK) || ''
+  )
+    .toString()
+    .trim()
+    .toLowerCase();
+  return !(flag === 'off' || flag === 'false' || flag === '0' || flag === 'deny');
+}
 
 interface CacheEntry<T> {
   data: T;
@@ -80,13 +103,18 @@ export class BinanceProvider implements MarketDataProvider {
   };
 
   /** وضعیت زنده بودن منبع داده (سازگار با رابط قبلی) */
-  getDataStatus(): { live: boolean } {
+  getDataStatus(): { live: boolean; measured: boolean } {
     // «زنده» یعنی آخرین دادهٔ سرو‌شده از بایننس آمده باشد، نه از موتور شبیه‌سازی.
     // (پیش‌تر تنها معیار، «هیچ افت شبیه‌سازی تا کنون» بود که پس از نخستین قطعی
     // اتصال، تا ری‌استارت سرور هرگز به «زنده» برنمی‌گشت.)
+    //
+    // `measured` اضافه شد چون روی یک نمونهٔ تازهٔ سرورلس هنوز *هیچ* داده‌ای
+    // خوانده نشده و پاسخ `live: true` یک ادعای اندازه‌گیری‌نشده بود: `/api/health`
+    // پیش از نخستین واکشی «سالم و زنده» گزارش می‌داد بدون اینکه شواهدی داشته باشد.
     const lastLive = this.stats.lastLiveAt ?? 0;
     const lastSimulated = this.stats.lastSimulatedAt ?? 0;
-    return { live: lastSimulated === 0 || lastLive >= lastSimulated };
+    const measured = lastLive > 0 || lastSimulated > 0;
+    return { live: measured ? lastLive >= lastSimulated : false, measured };
   }
 
   /** آمار کامل برای پایش و عیب‌یابی */
@@ -115,9 +143,10 @@ export class BinanceProvider implements MarketDataProvider {
     };
   }
 
-  private noteLive(host: string): void {
+  private noteLive(host: string, trace?: DataTrace): void {
     this.stats.liveFetches++;
     this.stats.lastLiveAt = Date.now();
+    if (trace) trace.live++;
     const state = this.hosts.get(host);
     if (state) {
       state.failures = 0;
@@ -137,9 +166,22 @@ export class BinanceProvider implements MarketDataProvider {
     this.hosts.set(host, state);
   }
 
-  private noteSimulated(): void {
+  private noteSimulated(trace?: DataTrace): void {
     this.stats.simulatedFetches++;
     this.stats.lastSimulatedAt = Date.now();
+    if (trace) trace.simulated++;
+  }
+
+  /**
+   * نقطهٔ یکتای «افت به دادهٔ ساختگی».
+   * اگر شبیه‌سازی با `DATA_SIMULATION_FALLBACK=off` خاموش شده باشد، خطا می‌دهد
+   * تا هیچ عدد ساختگی‌ای وارد خط لولهٔ تحلیل نشود.
+   */
+  private unavailable<T>(what: string, cause: unknown): T {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(
+      `دادهٔ ${what} از بایننس در دسترس نیست و شبیه‌سازی غیرفعال است (${reason})`
+    );
   }
 
   /**
@@ -147,11 +189,12 @@ export class BinanceProvider implements MarketDataProvider {
    * خروجی شبیه‌سازی قطعی است، بنابراین سرو کردن همان نتیجه برای چند ثانیه
    * هم داده را ناسازگار نمی‌کند و هم بار محاسباتی را پایین می‌آورد.
    */
-  private simulateWithCache<T>(key: string, factory: () => T): T {
+  private simulateWithCache<T>(key: string, factory: () => T, trace?: DataTrace): T {
     const cached = this.simCache.get(key);
     if (cached && Date.now() - cached.timestamp < this.SIM_CACHE_TTL_MS) {
       this.stats.cacheHits++;
       this.stats.simulatedCacheHits++;
+      this.noteSimulated(trace);
       return cached.data as T;
     }
     const data = factory();
@@ -167,7 +210,7 @@ export class BinanceProvider implements MarketDataProvider {
       if (oldestKey) this.simCache.delete(oldestKey);
     }
     this.simCache.set(key, { data, timestamp: Date.now() });
-    this.noteSimulated();
+    this.noteSimulated(trace);
     return data;
   }
 
@@ -176,11 +219,12 @@ export class BinanceProvider implements MarketDataProvider {
     return !!state && state.openUntil > Date.now();
   }
 
-  private readCache<T>(key: string, ttl = CACHE_TTL_MS): T | null {
+  private readCache<T>(key: string, ttl = CACHE_TTL_MS, trace?: DataTrace): T | null {
     const cached = this.cache.get(key) as CacheEntry<T> | undefined;
     if (cached && Date.now() - cached.timestamp < ttl) {
       this.stats.cacheHits++;
       this.stats.liveCacheHits++;
+      if (trace) trace.live++;
       return cached.data;
     }
     return null;
@@ -211,15 +255,24 @@ export class BinanceProvider implements MarketDataProvider {
    * پیش‌تر هر درخواست تا ۹ بار (۳ میزبان × ۳ تلاش) با تایم‌اوت ۶ ثانیه تکرار می‌شد
    * و یک تحلیل تک‌نماد می‌توانست ده‌ها ثانیه طول بکشد.
    */
-  private async fetchJson<T>(hosts: string[], path: string, ttl = CACHE_TTL_MS): Promise<T> {
+  private async fetchJson<T>(
+    hosts: string[],
+    path: string,
+    ttl = CACHE_TTL_MS,
+    trace?: DataTrace
+  ): Promise<T> {
     const cacheKey = `${hosts[0]}${path}`;
-    const cached = this.readCache<T>(cacheKey, ttl);
+    const cached = this.readCache<T>(cacheKey, ttl, trace);
     if (cached !== null) return cached;
 
     const inflightRequest = this.inflight.get(cacheKey);
     if (inflightRequest) {
       this.stats.coalescedRequests++;
-      return inflightRequest as Promise<T>;
+      // درخواست ادغام‌شده هم در شمارندهٔ همین درخواست ثبت می‌شود؛ وگرنه کیفیت
+      // دادهٔ درخواست دوم به‌اشتباه «هیچ فراخوانی‌ای انجام نشد» گزارش می‌شد.
+      const data = (await inflightRequest) as T;
+      if (trace) trace.live++;
+      return data;
     }
 
     const request = this.performFetch<T>(hosts, path)
@@ -232,7 +285,10 @@ export class BinanceProvider implements MarketDataProvider {
       });
 
     this.inflight.set(cacheKey, request as Promise<unknown>);
-    return request;
+    const data = await request;
+    // هر پاسخ موفقِ شبکه، یک «فراخوانی زنده» برای همین درخواست شمرده می‌شود
+    if (trace) trace.live++;
+    return data;
   }
 
   private async performFetch<T>(hosts: string[], path: string): Promise<T> {
@@ -283,7 +339,12 @@ export class BinanceProvider implements MarketDataProvider {
     throw lastError || new Error(`Failed to fetch ${path}`);
   }
 
-  async getKlines(symbol: string, timeframe: Timeframe, limit = 200): Promise<Kline[]> {
+  async getKlines(
+    symbol: string,
+    timeframe: Timeframe,
+    limit = 200,
+    trace?: DataTrace
+  ): Promise<Kline[]> {
     const formattedSymbol = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
     const safeLimit = Math.max(10, Math.min(1000, Math.floor(limit)));
     const interval: Timeframe = isTimeframe(timeframe) ? timeframe : '15m';
@@ -291,7 +352,9 @@ export class BinanceProvider implements MarketDataProvider {
     try {
       const raw = await this.fetchJson<unknown[][]>(
         this.baseSpotUrls,
-        `/api/v3/klines?symbol=${formattedSymbol}&interval=${interval}&limit=${safeLimit}`
+        `/api/v3/klines?symbol=${formattedSymbol}&interval=${interval}&limit=${safeLimit}`,
+        CACHE_TTL_MS,
+        trace
       );
 
       if (!Array.isArray(raw) || raw.length === 0) {
@@ -311,15 +374,18 @@ export class BinanceProvider implements MarketDataProvider {
         takerBuyBaseVolume: parseFloat(String(k[9])),
         takerBuyQuoteVolume: parseFloat(String(k[10])),
       }));
-    } catch {
+    } catch (err) {
       // افت به موتور شبیه‌سازی قطعی: خروجی پایدار، بازتولیدپذیر و سازگار با تیکر
-      return this.simulateWithCache(`sim:klines:${formattedSymbol}:${timeframe}:${safeLimit}`, () =>
-        simulateKlines(formattedSymbol, timeframe, safeLimit)
+      if (!simulationFallbackEnabled()) this.unavailable<Kline[]>(`کندل ${formattedSymbol}`, err);
+      return this.simulateWithCache(
+        `sim:klines:${formattedSymbol}:${timeframe}:${safeLimit}`,
+        () => simulateKlines(formattedSymbol, timeframe, safeLimit),
+        trace
       );
     }
   }
 
-  async getTicker24h(symbol: string): Promise<Ticker24h> {
+  async getTicker24h(symbol: string, trace?: DataTrace): Promise<Ticker24h> {
     const formattedSymbol = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
     try {
       const data = await this.fetchJson<{
@@ -333,7 +399,12 @@ export class BinanceProvider implements MarketDataProvider {
         quoteVolume: string;
         openPrice: string;
         closeTime: number;
-      }>(this.baseSpotUrls, `/api/v3/ticker/24hr?symbol=${formattedSymbol}`);
+      }>(
+        this.baseSpotUrls,
+        `/api/v3/ticker/24hr?symbol=${formattedSymbol}`,
+        CACHE_TTL_MS,
+        trace
+      );
 
       if (!data || typeof data.lastPrice !== 'string') {
         throw new Error('Invalid ticker response');
@@ -351,18 +422,24 @@ export class BinanceProvider implements MarketDataProvider {
         openPrice: parseFloat(data.openPrice),
         closeTime: data.closeTime,
       };
-    } catch {
-      return this.simulateWithCache(`sim:ticker:${formattedSymbol}`, () => simulateTicker(formattedSymbol));
+    } catch (err) {
+      if (!simulationFallbackEnabled()) this.unavailable<Ticker24h>(`تیکر ${formattedSymbol}`, err);
+      return this.simulateWithCache(
+        `sim:ticker:${formattedSymbol}`,
+        () => simulateTicker(formattedSymbol),
+        trace
+      );
     }
   }
 
   async getMultiTimeframeKlines(
     symbol: string,
     timeframes: Timeframe[],
-    limit = 150
+    limit = 150,
+    trace?: DataTrace
   ): Promise<Record<Timeframe, Kline[]>> {
     const results = await Promise.all(
-      timeframes.map(async (tf) => ({ tf, klines: await this.getKlines(symbol, tf, limit) }))
+      timeframes.map(async (tf) => ({ tf, klines: await this.getKlines(symbol, tf, limit, trace) }))
     );
 
     const mtfMap: Partial<Record<Timeframe, Kline[]>> = {};
@@ -373,295 +450,341 @@ export class BinanceProvider implements MarketDataProvider {
     return mtfMap as Record<Timeframe, Kline[]>;
   }
 
-  async getDerivativesData(symbol: string): Promise<DerivativesData> {
-    const formattedSymbol = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
-    let openInterest = 0;
-    let oiValue = 0;
-    let fundingRate = 0;
-    let globalLSR = 1.0;
-    let topPosRatio = 1.0;
-    let takerBuyRatio = 1.0;
-    let livePieces = 0;
+  /**
+   * فاصلهٔ فاندینگ واقعی هر نماد (ساعت).
+   *
+   * پیش‌تر سالانه‌سازی فاندینگ با ضریب ثابت `× 3 × 365` انجام می‌شد، یعنی فرض
+   * «فاندینگ ۸ساعته» برای همهٔ نمادها. بایننس برای بسیاری از نمادها فاصلهٔ ۴ساعته
+   * (و گاهی ۱ساعته) دارد، بنابراین آن عدد سالانه تا ۳ برابر اشتباه بود. اکنون
+   * فاصلهٔ واقعی از `/fapi/v1/fundingInfo` خوانده و یک روز نهان می‌شود.
+   */
+  private fundingIntervals = new Map<string, number>();
+  private fundingInfoFetchedAt = 0;
+  private readonly FUNDING_INFO_TTL_MS = 24 * 60 * 60_000;
+  /** فاصلهٔ پیش‌فرض بایننس وقتی فهرست fundingInfo در دسترس نباشد */
+  /**
+   * بازهٔ پیش‌فرض فاندینگ، فقط وقتی `/fapi/v1/fundingInfo` خوانده نشود.
+   * مقدار از `lib/funding.ts` می‌آید تا دو منبع حقیقت نسازیم؛ در این حالت
+   * `fundingIntervalHours: null` در خروجی گزارش می‌شود تا معلوم باشد عدد
+   * سالانه روی یک بازهٔ *فرض‌شده* محاسبه شده است.
+   */
+  private static readonly DEFAULT_FUNDING_INTERVAL_HOURS = DEFAULT_FUNDING_INTERVAL_HOURS;
 
-    try {
-      // ۱. قراردادهای باز
-      const oiRes = await this.fetchJson<{ openInterest: string; symbol: string; time: number }>(
-        [this.baseFuturesUrl],
-        `/fapi/v1/openInterest?symbol=${formattedSymbol}`,
-        CACHE_TTL_MS
-      ).catch(() => null);
-
-      if (oiRes?.openInterest) {
-        openInterest = parseFloat(oiRes.openInterest);
-        livePieces++;
-      }
-
-      // ۲. فاندینگ و مارک‌پرایس
-      const fundingRes = await this.fetchJson<{ lastFundingRate: string; markPrice: string }>(
-        [this.baseFuturesUrl],
-        `/fapi/v1/premiumIndex?symbol=${formattedSymbol}`,
-        CACHE_TTL_MS
-      ).catch(() => null);
-
-      if (fundingRes?.lastFundingRate) {
-        fundingRate = parseFloat(fundingRes.lastFundingRate);
-        if (fundingRes.markPrice && openInterest > 0) {
-          oiValue = openInterest * parseFloat(fundingRes.markPrice);
-        }
-        livePieces++;
-      }
-
-      // ۳. نسبت لانگ/شورت حساب‌ها
-      const lsrRes = await this.fetchJson<
-        { symbol: string; longShortRatio: string; longAccount: string; shortAccount: string }[]
-      >(
-        [this.baseFuturesUrl],
-        `/futures/data/globalLongShortAccountRatio?symbol=${formattedSymbol}&period=15m&limit=1`,
-        CACHE_TTL_MS
-      ).catch(() => null);
-
-      if (Array.isArray(lsrRes) && lsrRes.length > 0) {
-        globalLSR = parseFloat(lsrRes[0].longShortRatio);
-        livePieces++;
-      }
-
-      // ۴. نسبت پوزیشن معامله‌گران برتر
-      const topRes = await this.fetchJson<{ symbol: string; longShortRatio: string }[]>(
-        [this.baseFuturesUrl],
-        `/futures/data/topLongShortPositionRatio?symbol=${formattedSymbol}&period=15m&limit=1`,
-        CACHE_TTL_MS
-      ).catch(() => null);
-
-      if (Array.isArray(topRes) && topRes.length > 0) {
-        topPosRatio = parseFloat(topRes[0].longShortRatio);
-        livePieces++;
-      }
-
-      // ۵. حجم خرید/فروش تیکر
-      const takerRes = await this.fetchJson<
-        { buySellRatio: string; buyVol: string; sellVol: string }[]
-      >(
-        [this.baseFuturesUrl],
-        `/futures/data/takerBuySellVol?symbol=${formattedSymbol}&period=15m&limit=1`,
-        CACHE_TTL_MS
-      ).catch(() => null);
-
-      if (Array.isArray(takerRes) && takerRes.length > 0) {
-        takerBuyRatio = parseFloat(takerRes[0].buySellRatio);
-        livePieces++;
-      }
-
-      // تاریخچهٔ قراردادهای باز (تغییرات ۱ساعته و ۲۴ساعته)
-      let oiChange1hPercent = 0;
-      let oiChange24hPercent = 0;
-
-      const oiHist1h = await this.fetchJson<
-        { symbol: string; sumOpenInterest: string; timestamp: number }[]
-      >(
-        [this.baseFuturesUrl],
-        `/futures/data/openInterestHist?symbol=${formattedSymbol}&period=1h&limit=2`,
-        CACHE_TTL_MS
-      ).catch(() => null);
-
-      if (Array.isArray(oiHist1h) && oiHist1h.length >= 2) {
-        const prev = parseFloat(oiHist1h[0].sumOpenInterest);
-        const curr = parseFloat(oiHist1h[oiHist1h.length - 1].sumOpenInterest);
-        if (prev > 0) oiChange1hPercent = parseFloat((((curr - prev) / prev) * 100).toFixed(2));
-        livePieces++;
-      }
-
-      const oiHist24h = await this.fetchJson<
-        { symbol: string; sumOpenInterest: string; timestamp: number }[]
-      >(
-        [this.baseFuturesUrl],
-        `/futures/data/openInterestHist?symbol=${formattedSymbol}&period=4h&limit=7`,
-        CACHE_TTL_MS
-      ).catch(() => null);
-
-      if (Array.isArray(oiHist24h) && oiHist24h.length >= 2) {
-        const prev = parseFloat(oiHist24h[0].sumOpenInterest);
-        const curr = parseFloat(oiHist24h[oiHist24h.length - 1].sumOpenInterest);
-        if (prev > 0) oiChange24hPercent = parseFloat((((curr - prev) / prev) * 100).toFixed(2));
-        livePieces++;
-      }
-
-      // اگر حتی یک قطعهٔ داده زنده هم به دست نیامد، کل شیء باید شبیه‌سازی‌شده تلقی شود
-      if (livePieces === 0) {
-        return this.simulateWithCache(`sim:derivatives:${formattedSymbol}`, () =>
-          simulateDerivatives(formattedSymbol)
+  private async resolveFundingInterval(symbol: string): Promise<{ hours: number; live: boolean }> {
+    if (Date.now() - this.fundingInfoFetchedAt > this.FUNDING_INFO_TTL_MS) {
+      try {
+        const info = await this.fetchJson<{ symbol: string; fundingIntervalHours: number }[]>(
+          [this.baseFuturesUrl],
+          '/fapi/v1/fundingInfo',
+          this.FUNDING_INFO_TTL_MS
         );
+        if (Array.isArray(info) && info.length > 0) {
+          for (const row of info) {
+            if (typeof row?.symbol === 'string' && Number.isFinite(row.fundingIntervalHours)) {
+              this.fundingIntervals.set(row.symbol.toUpperCase(), row.fundingIntervalHours);
+            }
+          }
+          this.fundingInfoFetchedAt = Date.now();
+        }
+      } catch {
+        // فهرست در دسترس نیست؛ فاصلهٔ استاندارد ۸ساعته استفاده می‌شود و
+        // این وضعیت با `fundingIntervalHours: null` در خروجی اعلام می‌گردد.
       }
-
-      let oiTrend: DerivativesData['oiTrend'] = 'NEUTRAL';
-      if (oiChange1hPercent > 1.0) oiTrend = 'LONG_BUILDUP';
-      else if (oiChange1hPercent < -1.0) oiTrend = 'SHORT_COVERING';
-
-      const fundingCategory: DerivativesData['fundingCategory'] =
-        fundingRate > 0.0005
-          ? 'EXTREME_POSITIVE'
-          : fundingRate > 0.00015
-          ? 'POSITIVE'
-          : fundingRate < -0.0005
-          ? 'EXTREME_NEGATIVE'
-          : fundingRate < -0.0001
-          ? 'NEGATIVE'
-          : 'NEUTRAL';
-
-      const positioning: DerivativesData['positioning'] =
-        globalLSR > 1.8 || topPosRatio > 2.0
-          ? 'EXTREME_LONG'
-          : globalLSR > 1.2 || topPosRatio > 1.3
-          ? 'LONG_DOMINANT'
-          : globalLSR < 0.6 || topPosRatio < 0.5
-          ? 'EXTREME_SHORT'
-          : globalLSR < 0.85 || topPosRatio < 0.8
-          ? 'SHORT_DOMINANT'
-          : 'BALANCED';
-
-      return {
-        symbol: formattedSymbol,
-        openInterest,
-        openInterestValueUSD: oiValue,
-        oiChange1hPercent,
-        oiChange24hPercent,
-        oiTrend,
-        fundingRate,
-        fundingRateAnnualizedPercent: fundingRate * 3 * 365 * 100,
-        fundingCategory,
-        globalLongShortRatio: globalLSR,
-        topTraderLongShortRatio: topPosRatio,
-        topTraderPositionRatio: topPosRatio,
-        positioning,
-        takerBuySellRatio: takerBuyRatio,
-        timestamp: Date.now(),
-        isSimulated: false,
-      };
-    } catch {
-      return this.simulateWithCache(`sim:derivatives:${formattedSymbol}`, () =>
-        simulateDerivatives(formattedSymbol)
-      );
     }
+    const hours = this.fundingIntervals.get(symbol.toUpperCase());
+    return hours
+      ? { hours, live: true }
+      : { hours: BinanceProvider.DEFAULT_FUNDING_INTERVAL_HOURS, live: false };
   }
 
-  /** جدول نام و رتبهٔ نمادهای پرکاربرد (Binance رتبهٔ بازار ارائه نمی‌دهد) */
-  private staticNames: Record<string, { name: string; rank: number }> = {
-    BTC: { name: 'Bitcoin', rank: 1 },
-    ETH: { name: 'Ethereum', rank: 2 },
-    BNB: { name: 'BNB', rank: 4 },
-    SOL: { name: 'Solana', rank: 5 },
-    XRP: { name: 'XRP', rank: 3 },
-    DOGE: { name: 'Dogecoin', rank: 7 },
-    ADA: { name: 'Cardano', rank: 9 },
-    AVAX: { name: 'Avalanche', rank: 12 },
-    LINK: { name: 'Chainlink', rank: 14 },
-    DOT: { name: 'Polkadot', rank: 16 },
-    SUI: { name: 'Sui', rank: 15 },
-    NEAR: { name: 'NEAR Protocol', rank: 18 },
-    APT: { name: 'Aptos', rank: 22 },
-    PEPE: { name: 'Pepe', rank: 24 },
-    SHIB: { name: 'Shiba Inu', rank: 13 },
-    LTC: { name: 'Litecoin', rank: 20 },
-    UNI: { name: 'Uniswap', rank: 21 },
-    ICP: { name: 'Internet Computer', rank: 23 },
-    RENDER: { name: 'Render', rank: 26 },
-    FET: { name: 'Artificial Superintelligence', rank: 28 },
-  };
+  /**
+   * دادهٔ مشتقات از API آتی بایننس.
+   *
+   * اصلاح کلیدیِ شفافیت داده: پیش‌تر اگر حتی یک endpoint پاسخ می‌داد، بقیهٔ
+   * فیلدها با مقدار خنثی پیش‌فرض پر می‌شدند (LSR=1، فاندینگ=0، نسبت تیکر=1) و
+   * شیء با `isSimulated: false` برمی‌گشت. یعنی «دادهٔ ساخته‌شده» با برچسب
+   * «دادهٔ زنده» وارد امتیازدهی و رابط کاربری می‌شد. اکنون هر فیلدی که واقعاً
+   * خوانده نشده در `missingFields` گزارش می‌شود و مصرف‌کننده‌ها موظف‌اند آن را
+   * نادیده بگیرند.
+   */
+  async getDerivativesData(symbol: string, trace?: DataTrace): Promise<DerivativesData> {
+    const formattedSymbol = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const read: Record<DerivativesField, number | null> = {
+      openInterest: null,
+      openInterestValueUSD: null,
+      fundingRate: null,
+      oiChange1hPercent: null,
+      oiChange24hPercent: null,
+      globalLongShortRatio: null,
+      topTraderPositionRatio: null,
+      takerBuySellRatio: null,
+    };
+
+    const fut = <T>(path: string) =>
+      this.fetchJson<T>([this.baseFuturesUrl], path, CACHE_TTL_MS, trace).catch(() => null);
+
+    const [
+      oiRes,
+      fundingRes,
+      lsrRes,
+      topRes,
+      takerRes,
+      oiHist1h,
+      oiHist24h,
+      fundingInfo,
+    ] = await Promise.all([
+      fut<{ openInterest: string; symbol: string; time: number }>(
+        `/fapi/v1/openInterest?symbol=${formattedSymbol}`
+      ),
+      fut<{ lastFundingRate: string; markPrice: string }>(
+        `/fapi/v1/premiumIndex?symbol=${formattedSymbol}`
+      ),
+      fut<{ symbol: string; longShortRatio: string; longAccount: string; shortAccount: string }[]>(
+        `/futures/data/globalLongShortAccountRatio?symbol=${formattedSymbol}&period=15m&limit=1`
+      ),
+      fut<{ symbol: string; longShortRatio: string }[]>(
+        `/futures/data/topLongShortPositionRatio?symbol=${formattedSymbol}&period=15m&limit=1`
+      ),
+      fut<{ buySellRatio: string; buyVol: string; sellVol: string }[]>(
+        `/futures/data/takerBuySellVol?symbol=${formattedSymbol}&period=15m&limit=1`
+      ),
+      fut<{ symbol: string; sumOpenInterest: string; timestamp: number }[]>(
+        `/futures/data/openInterestHist?symbol=${formattedSymbol}&period=1h&limit=2`
+      ),
+      fut<{ symbol: string; sumOpenInterest: string; timestamp: number }[]>(
+        `/futures/data/openInterestHist?symbol=${formattedSymbol}&period=4h&limit=7`
+      ),
+      this.resolveFundingInterval(formattedSymbol),
+    ]);
+
+    if (oiRes && Number.isFinite(Number(oiRes.openInterest))) {
+      read.openInterest = Number(oiRes.openInterest);
+    }
+    if (fundingRes && Number.isFinite(Number(fundingRes.lastFundingRate))) {
+      read.fundingRate = Number(fundingRes.lastFundingRate);
+      const mark = Number(fundingRes.markPrice);
+      if (read.openInterest !== null && Number.isFinite(mark) && mark > 0) {
+        read.openInterestValueUSD = read.openInterest * mark;
+      }
+    }
+    if (Array.isArray(lsrRes) && lsrRes.length > 0 && Number.isFinite(Number(lsrRes[0].longShortRatio))) {
+      read.globalLongShortRatio = Number(lsrRes[0].longShortRatio);
+    }
+    if (Array.isArray(topRes) && topRes.length > 0 && Number.isFinite(Number(topRes[0].longShortRatio))) {
+      read.topTraderPositionRatio = Number(topRes[0].longShortRatio);
+    }
+    if (Array.isArray(takerRes) && takerRes.length > 0 && Number.isFinite(Number(takerRes[0].buySellRatio))) {
+      read.takerBuySellRatio = Number(takerRes[0].buySellRatio);
+    }
+    if (Array.isArray(oiHist1h) && oiHist1h.length >= 2) {
+      const prev = Number(oiHist1h[0].sumOpenInterest);
+      const curr = Number(oiHist1h[oiHist1h.length - 1].sumOpenInterest);
+      if (prev > 0 && Number.isFinite(curr)) {
+        read.oiChange1hPercent = Number((((curr - prev) / prev) * 100).toFixed(2));
+      }
+    }
+    if (Array.isArray(oiHist24h) && oiHist24h.length >= 2) {
+      const prev = Number(oiHist24h[0].sumOpenInterest);
+      const curr = Number(oiHist24h[oiHist24h.length - 1].sumOpenInterest);
+      if (prev > 0 && Number.isFinite(curr)) {
+        read.oiChange24hPercent = Number((((curr - prev) / prev) * 100).toFixed(2));
+      }
+    }
+
+    const missingFields = (Object.keys(read) as DerivativesField[]).filter((k) => read[k] === null);
+    const livePieces = (Object.keys(read) as DerivativesField[]).length - missingFields.length;
+
+    // اگر حتی یک قطعهٔ دادهٔ زنده هم به دست نیامد، کل شیء شبیه‌سازی‌شده است
+    if (livePieces === 0) {
+      const cause = new Error(`هیچ endpoint آتی برای ${formattedSymbol} پاسخ نداد`);
+      if (!simulationFallbackEnabled()) this.unavailable<DerivativesData>('مشتقات', cause);
+      return this.simulateWithCache(
+        `sim:derivatives:${formattedSymbol}`,
+        () => simulateDerivatives(formattedSymbol),
+        trace
+      );
+    }
+
+    const oiChange1h = read.oiChange1hPercent ?? 0;
+    const fundingRate = read.fundingRate ?? 0;
+    const globalLSR = read.globalLongShortRatio ?? 1;
+    const topPosRatio = read.topTraderPositionRatio ?? 1;
+
+    // دسته‌بندی‌ها فقط از فیلدهایی ساخته می‌شوند که واقعاً خوانده شده‌اند؛
+    // در غیر این صورت «خنثی» می‌مانند و مصرف‌کننده از missingFields آگاه است.
+    const oiTrend: DerivativesData['oiTrend'] =
+      read.oiChange1hPercent === null
+        ? 'NEUTRAL'
+        : oiChange1h > 1.0
+        ? 'LONG_BUILDUP'
+        : oiChange1h < -1.0
+        ? 'SHORT_COVERING'
+        : 'NEUTRAL';
+
+    const fundingCategory: DerivativesData['fundingCategory'] =
+      read.fundingRate === null
+        ? 'NEUTRAL'
+        : fundingRate > 0.0005
+        ? 'EXTREME_POSITIVE'
+        : fundingRate > 0.00015
+        ? 'POSITIVE'
+        : fundingRate < -0.0005
+        ? 'EXTREME_NEGATIVE'
+        : fundingRate < -0.0001
+        ? 'NEGATIVE'
+        : 'NEUTRAL';
+
+    const positioning: DerivativesData['positioning'] =
+      read.globalLongShortRatio === null && read.topTraderPositionRatio === null
+        ? 'BALANCED'
+        : globalLSR > 1.8 || topPosRatio > 2.0
+        ? 'EXTREME_LONG'
+        : globalLSR > 1.2 || topPosRatio > 1.3
+        ? 'LONG_DOMINANT'
+        : globalLSR < 0.6 || topPosRatio < 0.5
+        ? 'EXTREME_SHORT'
+        : globalLSR < 0.85 || topPosRatio < 0.8
+        ? 'SHORT_DOMINANT'
+        : 'BALANCED';
+
+    // سالانه‌سازی با فاصلهٔ واقعی فاندینگ همین نماد (۲۴ ÷ فاصله = تعداد دوره در روز).
+    // محاسبه در `lib/funding.ts` است تا بدون شبکه قابل تست باشد.
+    const fundingIntervalHours = fundingInfo.live ? fundingInfo.hours : null;
+    const fundingRateAnnualizedPercent =
+      annualizeFundingRate(fundingRate, fundingIntervalHours) ?? 0;
+
+    return {
+      symbol: formattedSymbol,
+      openInterest: read.openInterest ?? 0,
+      openInterestValueUSD: read.openInterestValueUSD ?? 0,
+      oiChange1hPercent: oiChange1h,
+      oiChange24hPercent: read.oiChange24hPercent ?? 0,
+      oiTrend,
+      fundingRate,
+      fundingRateAnnualizedPercent,
+      fundingCategory,
+      globalLongShortRatio: globalLSR,
+      topTraderLongShortRatio: topPosRatio,
+      topTraderPositionRatio: topPosRatio,
+      positioning,
+      takerBuySellRatio: read.takerBuySellRatio ?? 1,
+      timestamp: Date.now(),
+      isSimulated: false,
+      missingFields,
+      fundingIntervalHours,
+    };
+  }
+
+  /**
+   * کلاینت فرادادهٔ بازار (کوین‌گکو) — منبعِ «نام واقعی، رتبه و ارزش بازار».
+   *
+   * پیش‌تر یک جدول دستی در همین فایل سخت‌کد شده بود:
+   * `BTC: rank 1, ETH: rank 2, XRP: rank 3, …, RENDER: rank 26`.
+   * آن اعداد هیچ منبع زنده‌ای نداشتند و به‌مرور نادرست می‌شدند، اما در پاسخ API
+   * به‌عنوان «رتبهٔ بازار» ارائه می‌شدند. همچنین برای نمادهای ناشناخته رتبهٔ
+   * حدسی `50` و ارزش بازار `0` برگردانده می‌شد.
+   *
+   * اکنون رتبه/ارزش بازار/حجم فقط از فهرست واقعی بازار خوانده می‌شوند و در نبود
+   * آن `null` است — نه صفر، نه عدد حدسی.
+   */
+  private readonly metadataClient = new CoinGeckoProvider();
+  /** درخواست‌های ناموفق پیاپی به فهرست بازار، برای پرهیز از تلاش بی‌وقفه */
+  private metadataFailures = 0;
+  private metadataNextAttemptAt = 0;
 
   async getMetadata(symbol: string): Promise<CoinMetadata | null> {
     const base = symbol.toUpperCase().replace(/USDT$/, '').replace(/[^A-Z0-9]/g, '');
     const formatted = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
     const cached = this.metadataCache.get(base);
-    if (cached && Date.now() - cached.timestamp < this.METADATA_TTL_MS) {
+    if (cached && Date.now() - cached.timestamp < this.METADATA_TTL_MS && cached.data?.isLiveMetadata) {
       return cached.data;
     }
 
-    const info = this.staticNames[base] || { name: base, rank: 50 };
-    const metadata: CoinMetadata = {
+    // تلاش برای خواندن فهرست واقعی بازار (غیرمسدودکننده نسبت به پاسخ قبلی)
+    const liveMetadata = await this.readLiveMetadata(base).catch(() => null);
+    if (liveMetadata) {
+      const metadata: CoinMetadata = { ...liveMetadata, symbol: formatted };
+      this.metadataCache.set(base, { data: metadata, timestamp: Date.now() });
+      return metadata;
+    }
+
+    // بدون منبع واقعی: فقط نام (که از خودِ تیکر مشتق می‌شود) و هیچ عدد بازاری.
+    const fallback: CoinMetadata = {
       id: base.toLowerCase(),
       symbol: formatted,
-      name: info.name,
-      rank: info.rank,
-      marketCapUSD: 0,
-      volume24hUSD: 0,
-      priceChange24h: 0,
+      name: base,
+      rank: null,
+      marketCapUSD: null,
+      volume24hUSD: null,
+      priceChange24h: null,
       source: 'binance',
+      isLiveMetadata: false,
     };
-
-    // غنی‌سازی ارزش بازار از CoinGecko به‌صورت غیرمسدودکننده (background) انجام می‌شود؛
-    // پاسخ جاری هرگز منتظر شبکهٔ ثالث نمی‌ماند و نتیجه برای درخواست‌های بعدی نهان می‌شود.
-    this.hydrateMarketCapInBackground(base);
-    this.metadataCache.set(base, { data: metadata, timestamp: Date.now() });
-
-    return metadata;
+    this.metadataCache.set(base, { data: fallback, timestamp: Date.now() });
+    return fallback;
   }
 
-  private hydrateMarketCapInBackground(baseSymbol: string): void {
-    const host = 'https://api.coingecko.com';
-    if (this.isBreakerOpen(host)) return;
-
-    const ids: Record<string, string> = {
-      BTC: 'bitcoin',
-      ETH: 'ethereum',
-      BNB: 'binancecoin',
-      SOL: 'solana',
-      XRP: 'ripple',
-      DOGE: 'dogecoin',
-      ADA: 'cardano',
-      AVAX: 'avalanche-2',
-      LINK: 'chainlink',
-      DOT: 'polkadot',
-      SUI: 'sui',
-      NEAR: 'near',
-      APT: 'aptos',
-      PEPE: 'pepe',
-      SHIB: 'shiba-inu',
+  /**
+   * وضعیت واقعی منبع فراداده (کوین‌گکو).
+   *
+   * `/api/health` پیش‌تر بی‌قیدوشرط `metadataProvider: 'coingecko-public-markets'`
+   * گزارش می‌داد، حتی وقتی کوین‌گکو کاملاً unreachable بود و نام/رتبهٔ همهٔ ارزها
+   * `null` برمی‌گشت. این متد وضعیت اندازه‌گیری‌شده را برمی‌گرداند.
+   */
+  getMetadataStatus(): {
+    provider: 'coingecko';
+    available: boolean;
+    marketsFetchedAt: string | null;
+    apiKeyConfigured: boolean;
+    lastError: string | null;
+  } {
+    const fetchedAt = this.metadataClient.getMarketsFetchedAt();
+    return {
+      provider: 'coingecko',
+      available: fetchedAt > 0,
+      marketsFetchedAt: fetchedAt > 0 ? new Date(fetchedAt).toISOString() : null,
+      apiKeyConfigured: this.metadataClient.hasApiKey(),
+      lastError: this.metadataClient.getLastError(),
     };
-    const coinId = ids[baseSymbol];
-    if (!coinId) return;
+  }
 
-    void (async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-        const res = await fetch(
-          `${host}/api/v3/simple/price?ids=${coinId}&vs_currencies=usd&include_market_cap=true&include_24hr_vol=true&include_24hr_change=true`,
-          { signal: controller.signal, headers: { Accept: 'application/json' } }
-        );
-        clearTimeout(timeoutId);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = (await res.json()) as Record<
-          string,
-          { usd?: number; usd_market_cap?: number; usd_24h_vol?: number; usd_24h_change?: number }
-        >;
-        const coin = json[coinId];
-        if (!coin) return;
-        this.noteLive(host);
-        const existing = this.metadataCache.get(baseSymbol)?.data;
-        if (!existing) return;
-        this.metadataCache.set(baseSymbol, {
-          data: {
-            ...existing,
-            marketCapUSD: coin.usd_market_cap || 0,
-            volume24hUSD: coin.usd_24h_vol || 0,
-            priceChange24h: coin.usd_24h_change || 0,
-          },
-          timestamp: Date.now(),
-        });
-      } catch (err) {
-        this.noteFailure(host, err instanceof Error ? err.message : String(err));
-      }
-    })();
+  private async readLiveMetadata(base: string): Promise<CoinMetadata | null> {
+    if (Date.now() < this.metadataNextAttemptAt) {
+      return this.metadataCache.get(base)?.data?.isLiveMetadata
+        ? this.metadataCache.get(base)!.data
+        : null;
+    }
+    const metadata = await this.metadataClient.getMetadata(base);
+    if (metadata) {
+      this.metadataFailures = 0;
+      this.noteLive('https://api.coingecko.com');
+      return metadata;
+    }
+    this.metadataFailures += 1;
+    // پس از هر شکست، تلاش بعدی با تأخیر فزاینده انجام می‌شود (حداکثر ۱۰ دقیقه)
+    const backoff = Math.min(10 * 60_000, 30_000 * 2 ** Math.min(4, this.metadataFailures - 1));
+    this.metadataNextAttemptAt = Date.now() + backoff;
+    const err = this.metadataClient.getLastError();
+    if (err) this.noteFailure('https://api.coingecko.com', err);
+    return null;
+  }
+
+  /**
+   * فهرست نمادها بر پایهٔ حجم واقعی ۲۴ساعتهٔ بازار اسپات بایننس.
+   *
+   * در نبود شبکه، یک «دیده‌بان ایستای پیکربندی» برگردانده می‌شود؛ این فهرست
+   * *دادهٔ بازار* نیست و در `lastSymbolsSource` اعلام می‌شود تا مصرف‌کننده بداند
+   * رتبه‌بندی حجمیِ زنده انجام نشده است.
+   */
+  private lastSymbolsSource: 'live-volume' | 'static-watchlist' = 'static-watchlist';
+
+  /** منبع آخرین فهرست نمادها (برای شفافیت در پاسخ API) */
+  getSymbolsSource(): 'live-volume' | 'static-watchlist' {
+    return this.lastSymbolsSource;
   }
 
   async getTopSymbols(count = 25): Promise<string[]> {
-    const defaultSymbols = [
-      'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
-      'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT',
-      'SUIUSDT', 'NEARUSDT', 'APTUSDT', 'PEPEUSDT', 'SHIBUSDT',
-      'LTCUSDT', 'UNIUSDT', 'ICPUSDT', 'RENDERUSDT', 'FETUSDT',
-      'ARBUSDT', 'OPUSDT', 'INJUSDT', 'TIAUSDT', 'SEIUSDT',
-    ];
     const safeCount = Math.max(1, Math.min(100, Math.floor(count)));
 
     try {
@@ -705,14 +828,19 @@ export class BinanceProvider implements MarketDataProvider {
           .sort((a, b) => (volumeByPair.get(b) || 0) - (volumeByPair.get(a) || 0))
           .slice(0, safeCount);
 
-        if (ranked.length >= safeCount) return ranked;
+        if (ranked.length >= safeCount) {
+          this.lastSymbolsSource = 'live-volume';
+          return ranked;
+        }
       }
     } catch {
-      // در نبود شبکه، فهرست پیش‌فرض استفاده می‌شود
-      this.noteSimulated();
+      // در نبود شبکه، دیده‌بان ایستای پیکربندی استفاده می‌شود.
+      // عمداً noteSimulated() صدا زده نمی‌شود: این «دادهٔ بازار» نیست و نباید
+      // کیفیت دادهٔ تحلیل را به‌اشتباه «شبیه‌سازی‌شده» گزارش کند.
     }
 
-    return defaultSymbols.slice(0, safeCount);
+    this.lastSymbolsSource = 'static-watchlist';
+    return FALLBACK_WATCHLIST.slice(0, safeCount);
   }
 
   /** قیمت پایهٔ شبیه‌سازی (فقط برای آزمون‌ها و رابط کاربری) */

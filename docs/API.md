@@ -20,13 +20,21 @@ Returns the service status. No database required.
   "ok": true,
   "status": "healthy",
   "service": "crypto-advanced-signal-scanner",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "mode": "serverless-memory",
   "primaryProvider": "binance-public",
-  "metadataFallback": "coingecko",
+  "metadataProvider": {
+    "provider": "coingecko",
+    "available": true,
+    "marketsFetchedAt": "2025-01-15T11:47:12.000Z",
+    "apiKeyConfigured": false,
+    "lastError": null
+  },
   "dataFallback": "deterministic-simulation",
+  "symbolsSource": "live-volume",
   "dataStatus": {
     "live": true,
+    "measured": true,
     "liveFetches": 128,
     "simulatedFetches": 0,
     "cacheHits": 74,
@@ -50,8 +58,21 @@ Returns the service status. No database required.
 | :--------- | :---------------------------------------------------------------------- |
 | `healthy`  | API عمومی بایننس در دسترس است                                         |
 | `degraded` | دسترسی به بایننس برقرار نیست و خروجی‌ها از موتور شبیه‌سازی قطعی می‌آیند |
+| `unknown`  | هنوز هیچ دادهٔ بازاری در این نمونه خوانده نشده (نمونهٔ تازهٔ سرورلس)؛ وضعیت منبع داده قابل ادعا نیست |
+
+`dataStatus.measured` می‌گوید آیا اصلاً داده‌ای خوانده شده است یا نه. پیش‌تر یک
+نمونهٔ تازه با صفر فراخوانی `status: "healthy"` و `live: true` گزارش می‌داد —
+یعنی یک ادعای اندازه‌گیری‌نشده به‌عنوان نتیجهٔ اندازه‌گیری ارائه می‌شد.
 
 `dataStatus.openBreakers` میزبان‌هایی را نشان می‌دهد که قطع‌کنندهٔ مدارشان (circuit breaker) پس از خطاهای پیاپی باز شده است و موقتاً نادیده گرفته می‌شوند.
+
+`metadataProvider` وضعیت **واقعی** منبع فرادادهٔ بازار است. پیش‌تر این فیلد
+`metadataFallback: "coingecko"` بود و بی‌قیدوشرط حضور کوین‌گکو را ادعا می‌کرد، حتی
+وقتی کوین‌گکو کاملاً در دسترس نبود. وقتی `available: false` باشد، نام/رتبه/ارزش
+بازار در پاسخ‌ها `null` است (نه یک عدد حدسی) و یک هشدار در `warnings` اضافه می‌شود.
+
+`symbolsSource` نشان می‌دهد فهرست نمادها از رتبه‌بندی حجمی زندهٔ بایننس آمده
+(`live-volume`) یا از دیده‌بان ایستای پیکربندی (`static-watchlist`).
 
 ---
 
@@ -271,7 +292,7 @@ Runs the full market scanner across a tier of symbols.
 
 | Param     | Type   | Default  | Description                                   |
 | :-------- | :----- | :------- | :-------------------------------------------- |
-| `tier`    | string | `top10`  | `top10`, `top25`, `top50`                     |
+| `tier`    | string | `top10`  | `top10`, `top25`, `top50` — every other value returns `400 INVALID_TIER` |
 | `tf`      | string | `15m`    | Primary timeframe                             |
 | `symbols` | string | (none)   | Custom comma-separated list (overrides tier)  |
 
@@ -454,7 +475,7 @@ Returns engine configuration, scoring weights, and system parameters.
 **Response:**
 ```json
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "weights": {
     "liquidity": 0.2,
     "marketStructure": 0.2,

@@ -1,4 +1,5 @@
 import { DerivativesData, Kline, Timeframe, Ticker24h } from '../types/market';
+import { annualizeFundingRate } from '../lib/funding';
 import { TIMEFRAME_MS } from '../lib/timeframes';
 
 /**
@@ -305,7 +306,9 @@ export function simulateDerivatives(symbol: string, now: number = Date.now()): D
     oiChange24hPercent,
     oiTrend,
     fundingRate,
-    fundingRateAnnualizedPercent: Number((fundingRate * 3 * 365 * 100).toFixed(3)),
+    // بازهٔ واقعی تسویه در دادهٔ شبیه‌سازی‌شده وجود ندارد، پس از همان کمکی
+    // استفاده می‌کنیم که مسیر زنده استفاده می‌کند (بازهٔ پیش‌فرض مستند).
+    fundingRateAnnualizedPercent: annualizeFundingRate(fundingRate, null) ?? 0,
     fundingCategory,
     globalLongShortRatio,
     topTraderLongShortRatio: topTraderPositionRatio,
@@ -314,5 +317,28 @@ export function simulateDerivatives(symbol: string, now: number = Date.now()): D
     takerBuySellRatio,
     timestamp: now,
     isSimulated: true,
+    /**
+     * همهٔ فیلدها شبیه‌سازی‌شده‌اند، پس همه در `missingFields` فهرست می‌شوند.
+     *
+     * این فیلد پیش‌تر اصلاً تنظیم نمی‌شد و در نتیجه `enrichDerivativesData`
+     * (که روی `missingFields` دروازه می‌گذارد) دقیقاً همان‌جا که مهم بود — یعنی
+     * روی دادهٔ شبیه‌سازی‌شده — بی‌اثر می‌شد و از `oiChange1hPercent` ساختگی یک
+     * برچسب «روند موقعیت» می‌ساخت.
+     */
+    missingFields: [
+      'openInterest',
+      'openInterestValueUSD',
+      'fundingRate',
+      'oiChange1hPercent',
+      'oiChange24hPercent',
+      'globalLongShortRatio',
+      'topTraderPositionRatio',
+      'takerBuySellRatio',
+    ],
+    /**
+     * بازهٔ تسویهٔ فاندینگ یک واقعیت *بازاری* است، نه چیزی که بتوان شبیه‌سازی
+     * کرد؛ پس `null` می‌ماند و سالانه‌سازی روی بازهٔ پیش‌فرض مستند انجام می‌شود.
+     */
+    fundingIntervalHours: null,
   };
 }

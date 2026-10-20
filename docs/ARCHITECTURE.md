@@ -35,7 +35,8 @@ The Crypto Advanced Signal Scanner is a **zero-database, serverless** applicatio
                │                          │
     ┌──────────┴──────────┐    ┌──────────┴──────────┐
     │ Binance Public API  │    │ CoinGecko API       │
-    │ Spot + Futures      │    │ Metadata & OHLC     │
+    │ Spot + Futures      │    │ Metadata only       │
+    │ klines/ticker/deriv │    │ name·rank·mcap·vol  │
     └─────────────────────┘    └─────────────────────┘
 ```
 
@@ -195,6 +196,38 @@ Circuit breakers open after 2 consecutive failures per host and skip it for 25 s
 timeouts are 4 s per attempt with a single retry (the previous 3 hosts × 3
 attempts × 6 s could make one analysis take tens of seconds).
 
+### Data provenance guarantees
+
+The whole pipeline is built around one rule: **an unknown value is reported as
+unknown, never as a plausible-looking number.**
+
+| Situation                                  | Reported as                                                              |
+| :----------------------------------------- | :----------------------------------------------------------------------- |
+| Binance unreachable, simulation allowed    | `dataSource: "simulated"`, `dataQuality.source: "simulated"`             |
+| Some calls live, some simulated            | `dataSource: "mixed"` — *not* collapsed into either extreme              |
+| CoinGecko unreachable                      | name/rank/market-cap/volume = `null`, `metadataProvider.available: false`|
+| A derivatives endpoint does not answer     | field listed in `missingFields`; no trend/category derived from it       |
+| Not enough candles for a timeframe         | `available: false`, `trend: "UNKNOWN"`, `structureScore: null`           |
+| No unswept liquidity level to measure      | `upPercent: null` (never a fabricated 50/50 split)                       |
+| Backtest with no losing trades             | `profitFactor: null` (rendered as `∞`), never a `99.99` sentinel         |
+| `DATA_SIMULATION_FALLBACK=off`             | the request **fails**; no simulated number can enter the pipeline        |
+
+Provenance is measured **per request** through a `DataTrace` threaded into every
+provider call. The earlier implementation diffed the singleton provider's global
+counters before/after, so two concurrent serverless requests contaminated each
+other's `dataQuality`.
+
+Removed fabrications that used to ship as real data:
+
+- a hardcoded symbol → market-cap-rank table (`BTC 1, ETH 2, … unknown → 50`);
+- CoinGecko `highPrice = price × 1.02` / `lowPrice = price × 0.98` and a fixed
+  `fundingRate = 0.0001` (`10.95%` APR);
+- Bitcoin klines silently served for unknown symbols;
+- a `+25` long-bias derivatives stub injected into every backtest trade;
+- `{trend: "RANGING", structureScore: 50}` invented for timeframes with no data;
+- `longShare: 50` / `upPercent: 50` invented when no positioning data exists;
+- a `wickToBodyRatio` of `2.0` invented for doji candles.
+
 ### Client-facing rate limits
 Every route applies an in-memory token bucket per IP (scanner 40/min, analyze
 60/min, signals 30/min, backtest 12/min, market data 90/min …) and answers
@@ -283,7 +316,7 @@ this.providers.set('bybit', new BybitProvider());
 | Icons         | Lucide React                        | Consistent icon system          |
 | API           | Next.js Route Handlers + Hono       | REST API layer                  |
 | Worker        | Cloudflare Workers + Hono           | Serverless edge computing       |
-| Data          | Binance Public API + CoinGecko      | Market data feeds               |
+| Data          | Binance Public API (market) + CoinGecko (metadata only) | Market data feeds |
 | Language      | TypeScript (strict mode)            | Type safety throughout          |
 | Testing       | tsx + custom runner                 | Unit & integration tests        |
 | CI/CD         | GitHub Actions                      | Lint → Test → Build → Deploy    |

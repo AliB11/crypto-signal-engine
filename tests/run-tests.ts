@@ -13,6 +13,18 @@ import {
 import { testSignalTargetLadder, testLiquidityMappedTargets } from './signal-ladder.test';
 import { testApiValidation, testRateLimiter, testResampling, testRiskMetrics } from './platform.test';
 import { testSignalLifecycle, testMarketPulse, testLiquidityMagnets } from './features.test';
+import {
+  testFundingAnnualisation,
+  testDataTraceIsolation,
+  testMtfHonesty,
+  testStructureAvailability,
+  testSweepDojiTautology,
+  testDerivativesEnrichment,
+  testWilderAtr,
+  testBacktestCostsAndExits,
+  testSimulatedDerivativesAreGated,
+  testScannerTierValidation,
+} from './honesty.test';
 
 async function runAllTests() {
   console.log('========================================================');
@@ -39,6 +51,18 @@ async function runAllTests() {
     testSignalLifecycle();
     testMarketPulse();
     testLiquidityMagnets();
+
+    // ── صداقت داده: هیچ عدد ساختگی‌ای به‌جای «نمی‌دانم» ──
+    testFundingAnnualisation();
+    testDataTraceIsolation();
+    testMtfHonesty();
+    testStructureAvailability();
+    testSweepDojiTautology();
+    testDerivativesEnrichment();
+    testWilderAtr();
+    testBacktestCostsAndExits();
+    testSimulatedDerivativesAreGated();
+    testScannerTierValidation();
 
     console.log('\n========================================================');
     console.log('ALL UNIT & INTEGRATION TESTS PASSED SUCCESSFULLY! ✓');

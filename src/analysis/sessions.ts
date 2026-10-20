@@ -1,4 +1,5 @@
 import { Kline, SessionInfo, SessionLiquiditySummary, LiquidityLevel } from '../types/market';
+import { SESSION_DEFINITIONS } from '../config/engine';
 
 /**
  * تحلیل نقدینگی جلسات معاملاتی (آسیا / لندن / نیویورک)
@@ -34,9 +35,13 @@ export function analyzeSessionLiquidity(klines: Kline[]): SessionLiquiditySummar
       currentSession: 'Between Sessions',
       activeSessions: [],
       sessions: {
-        asian: emptySession('Asian', 0, 8),
-        london: emptySession('London', 7, 15),
-        newYork: emptySession('New York', 13, 21),
+        asian: emptySession('Asian', SESSION_DEFINITIONS.asian.startHourUTC, SESSION_DEFINITIONS.asian.endHourUTC),
+        london: emptySession('London', SESSION_DEFINITIONS.london.startHourUTC, SESSION_DEFINITIONS.london.endHourUTC),
+        newYork: emptySession(
+          'New York',
+          SESSION_DEFINITIONS.newYork.startHourUTC,
+          SESSION_DEFINITIONS.newYork.endHourUTC
+        ),
       },
       judasSwingDetected: false,
       nyReversalDetected: false,
@@ -118,9 +123,14 @@ export function analyzeSessionLiquidity(klines: Kline[]): SessionLiquiditySummar
     };
   };
 
-  const asian = buildSession('Asian', 0, 8);
-  const london = buildSession('London', 7, 15);
-  const newYork = buildSession('New York', 13, 21);
+  // ساعات از تک‌منبع پیکربندی خوانده می‌شود تا موتور و رابط کاربری هرگز واگرا نشوند
+  const asian = buildSession('Asian', SESSION_DEFINITIONS.asian.startHourUTC, SESSION_DEFINITIONS.asian.endHourUTC);
+  const london = buildSession('London', SESSION_DEFINITIONS.london.startHourUTC, SESSION_DEFINITIONS.london.endHourUTC);
+  const newYork = buildSession(
+    'New York',
+    SESSION_DEFINITIONS.newYork.startHourUTC,
+    SESSION_DEFINITIONS.newYork.endHourUTC
+  );
 
   // اولویت جلسهٔ جاری: آخرین جلسه‌ای که شروع شده است (نیویورک > لندن > آسیا)
   type NamedSession = 'Asian' | 'London' | 'New York';
