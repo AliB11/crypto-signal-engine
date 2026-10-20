@@ -1,28 +1,82 @@
-import { Kline, Ticker24h, DerivativesData, CoinMetadata, Timeframe, DataProviderStats, DataQualityInfo } from '../types/market';
+import {
+  Kline,
+  Ticker24h,
+  DerivativesData,
+  CoinMetadata,
+  Timeframe,
+  DataProviderStats,
+  DataQualityInfo,
+  DataTrace,
+} from '../types/market';
 
 export interface MarketDataProvider {
   readonly name: string;
-  getKlines(symbol: string, timeframe: Timeframe, limit?: number): Promise<Kline[]>;
-  getTicker24h(symbol: string): Promise<Ticker24h>;
+  getKlines(symbol: string, timeframe: Timeframe, limit?: number, trace?: DataTrace): Promise<Kline[]>;
+  getTicker24h(symbol: string, trace?: DataTrace): Promise<Ticker24h>;
   getMultiTimeframeKlines(
     symbol: string,
     timeframes: Timeframe[],
-    limit?: number
+    limit?: number,
+    trace?: DataTrace
   ): Promise<Record<Timeframe, Kline[]>>;
-  getDerivativesData(symbol: string): Promise<DerivativesData>;
+  getDerivativesData(symbol: string, trace?: DataTrace): Promise<DerivativesData>;
   getMetadata(symbol: string): Promise<CoinMetadata | null>;
   getTopSymbols(count?: number): Promise<string[]>;
   /** وضعیت زنده بودن منبع داده (در صورت پشتیبانی پروایدر) */
-  getDataStatus?(): { live: boolean };
+  /**
+   * وضعیت زنده بودن منبع داده.
+   * `measured: false` یعنی هنوز هیچ داده‌ای خوانده نشده و `live` معنایی ندارد.
+   */
+  getDataStatus?(): { live: boolean; measured: boolean };
   /** آمار تفصیلی پروایدر برای شفافیت داده و عیب‌یابی */
   getStats?(): DataProviderStats;
+  /**
+   * منبع آخرین فهرست نمادها: رتبه‌بندی حجمیِ زنده یا دیده‌بان ایستای پیکربندی.
+   */
+  /** وضعیت واقعی منبع فرادادهٔ بازار (نام/رتبه/ارزش بازار) */
+  getMetadataStatus?(): {
+    provider: 'coingecko';
+    available: boolean;
+    marketsFetchedAt: string | null;
+    apiKeyConfigured: boolean;
+    lastError: string | null;
+  };
+  getSymbolsSource?(): 'live-volume' | 'static-watchlist';
+}
+
+/** ساخت یک شمارندهٔ تازه برای یک درخواست مشخص */
+export function createDataTrace(): DataTrace {
+  return { live: 0, simulated: 0 };
 }
 
 /**
- * محاسبهٔ کیفیت دادهٔ یک درخواست از اختلاف آمار پروایدر در ابتدا و انتهای کار.
- * این روش جایگزین پرچم سراسری قبلی (`simulatedFallbackUsed`) شده است که پس از
- * نخستین افت، برنامه را برای همیشه «شبیه‌سازی‌شده» نشان می‌داد و حتی در
- * مسیر `/api/scanner` پیش از اجرای اسکن خوانده می‌شد (بنابراین همیشه «live» بود).
+ * کیفیت دادهٔ «همین درخواست» از شمارندهٔ اختصاصی همان درخواست.
+ *
+ * چرا نه اختلاف آمار سراسری پروایدر؟ چون در محیط سرورلس یک نمونهٔ ماژول بین
+ * چندین درخواست زنده می‌ماند و دو درخواست هم‌زمان، آمار یکدیگر را می‌بینند.
+ */
+export function dataQualityFromTrace(trace: DataTrace | undefined): DataQualityInfo {
+  if (!trace) {
+    return {
+      source: 'live',
+      liveRatio: 1,
+      liveFetches: 0,
+      simulatedFetches: 0,
+      message: 'وضعیت منبع داده در دسترس نیست',
+    };
+  }
+
+  const liveFetches = Math.max(0, trace.live);
+  const simulatedFetches = Math.max(0, trace.simulated);
+  return qualityFromCounts(liveFetches, simulatedFetches);
+}
+
+/**
+ * محاسبهٔ کیفیت داده از اختلاف آمار پروایدر در ابتدا و انتهای کار.
+ *
+ * فقط برای سازگاری با فراخوان‌های قدیمی/تک‌درخواستی نگه داشته شده است؛ مسیرهای
+ * اصلی (`engine.ts` و `scanner.ts`) اکنون از `dataQualityFromTrace` استفاده
+ * می‌کنند که به درخواست‌های هم‌زمان حساس نیست.
  */
 export function computeDataQuality(
   before: DataProviderStats | undefined,
@@ -46,6 +100,11 @@ export function computeDataQuality(
   const simulatedFetches =
     Math.max(0, after.simulatedFetches - before.simulatedFetches) +
     Math.max(0, (after.simulatedCacheHits ?? 0) - (before.simulatedCacheHits ?? 0));
+
+  return qualityFromCounts(liveFetches, simulatedFetches);
+}
+
+function qualityFromCounts(liveFetches: number, simulatedFetches: number): DataQualityInfo {
   const total = liveFetches + simulatedFetches;
 
   let source: DataQualityInfo['source'] = 'live';
@@ -56,10 +115,18 @@ export function computeDataQuality(
 
   const message =
     source === 'live'
-      ? 'داده‌های این تحلیل مستقیماً از API عمومی بایننس خوانده شده‌اند.'
+      ? total === 0
+        ? 'هیچ دادهٔ بازار در این درخواست خوانده نشد.'
+        : 'داده‌های این تحلیل مستقیماً از API عمومی بایننس خوانده شده‌اند.'
       : source === 'simulated'
       ? 'دسترسی به بایننس برقرار نشد؛ همهٔ داده‌های این تحلیل از موتور شبیه‌سازی قطعی آمده‌اند و برای معاملهٔ واقعی مناسب نیستند.'
       : `بخشی از داده‌ها زنده و بخشی شبیه‌سازی‌شده است (نسبت زنده: ${(liveRatio * 100).toFixed(0)}٪).`;
 
-  return { source, liveRatio: Number(liveRatio.toFixed(3)), liveFetches, simulatedFetches, message };
+  return {
+    source,
+    liveRatio: Number(liveRatio.toFixed(3)),
+    liveFetches,
+    simulatedFetches,
+    message,
+  };
 }

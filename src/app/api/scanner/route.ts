@@ -12,7 +12,7 @@ import {
   rateLimitResponse,
   errorResponse,
 } from '@/lib/http';
-import { LIMITS } from '@/config/engine';
+import { LIMITS, SCANNER_TIER_COUNTS, parseScannerTier } from '@/config/engine';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,7 +22,16 @@ export async function GET(request: NextRequest) {
 
   try {
     const searchParams = request.nextUrl.searchParams;
-    const tier = searchParams.get('tier') || 'top10';
+    const tier = parseScannerTier(searchParams.get('tier'));
+    if (tier === null) {
+      return NextResponse.json(
+        {
+          error: "مقدار نامعتبر برای پارامتر tier؛ مقادیر مجاز: 'top10'، 'top25'، 'top50'.",
+          status: 'INVALID_TIER',
+        },
+        { status: 400 }
+      );
+    }
     const tf = parseTimeframeParam(searchParams.get('tf'), '15m');
     const customSymbols = searchParams.get('symbols');
     const weights = parseWeightsParam<SignalWeights>(searchParams.get('weights'), DEFAULT_WEIGHTS);
@@ -36,7 +45,7 @@ export async function GET(request: NextRequest) {
         .filter((s): s is string => s.length >= 3)
         .slice(0, LIMITS.scannerMaxSymbols);
     } else {
-      const count = tier === 'top50' ? 50 : tier === 'top25' ? 25 : 10;
+      const count = SCANNER_TIER_COUNTS[tier];
       symbolList = await dataProvider.getTopSymbols(count);
     }
 

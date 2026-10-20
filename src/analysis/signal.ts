@@ -61,8 +61,10 @@ const LEVEL_TO_TARGET_SOURCE: Record<LiquidityLevel['type'], TradeTargetSource> 
   EQUAL_LOW: 'EQUAL_LOW',
   PREVIOUS_DAY_HIGH: 'PREVIOUS_DAY_HIGH',
   PREVIOUS_DAY_LOW: 'PREVIOUS_DAY_LOW',
-  PREVIOUS_WEEK_HIGH: 'PREVIOUS_DAY_HIGH',
-  PREVIOUS_WEEK_LOW: 'PREVIOUS_DAY_LOW',
+  // پیش‌تر سقف/کف هفتهٔ قبل به‌عنوان «سقف/کف روز قبل» برچسب می‌خورد؛ یعنی
+  // منبع هدفی که به کاربر گزارش می‌شد با واقعیت یکی نبود.
+  PREVIOUS_WEEK_HIGH: 'PREVIOUS_WEEK_HIGH',
+  PREVIOUS_WEEK_LOW: 'PREVIOUS_WEEK_LOW',
   SESSION_HIGH: 'SESSION_HIGH',
   SESSION_LOW: 'SESSION_LOW',
   LOCAL_HIGH: 'SWING_HIGH',
@@ -267,19 +269,41 @@ export function generateSignal(params: {
   if (Math.abs(volume.imbalance) > 15) volScore += 15;
   volScore = Math.min(100, volScore);
 
-  // F. مشتقات
+  /**
+   * در دسترس بودن واقعی هر فیلد مشتقات.
+   *
+   * دو حالت «دادهٔ ساختگی» وجود دارد و هر دو باید خنثی شوند:
+   *   ۱) کل شیء از موتور شبیه‌سازی آمده باشد (`isSimulated`).
+   *   ۲) فقط بخشی از endpointهای آتی پاسخ داده باشند؛ در آن حالت فیلدهای نخوانده
+   *      در `missingFields` اعلام می‌شوند و مقدار عددی‌شان فقط یک جای‌نگهدار صفر/یک است.
+   */
+  const missingFields = new Set(derivatives.missingFields ?? []);
+  const derivativesLive = derivatives.isSimulated !== true;
+  const oiAvailable = derivativesLive && !missingFields.has('oiChange1hPercent');
+  const fundingAvailable = derivativesLive && !missingFields.has('fundingRate');
+  const positioningAvailable =
+    derivativesLive &&
+    (!missingFields.has('globalLongShortRatio') || !missingFields.has('topTraderPositionRatio'));
+
+  // F. مشتقات — فقط بر پایهٔ فیلدهایی که واقعاً خوانده شده‌اند
   let derivScore = 50;
-  if (derivatives.oiTrend === 'LONG_BUILDUP' || derivatives.oiTrend === 'SHORT_BUILDUP') derivScore += 25;
-  if (derivatives.fundingCategory === 'EXTREME_NEGATIVE' || derivatives.fundingCategory === 'EXTREME_POSITIVE') {
+  if (oiAvailable && (derivatives.oiTrend === 'LONG_BUILDUP' || derivatives.oiTrend === 'SHORT_BUILDUP')) {
+    derivScore += 25;
+  }
+  if (
+    fundingAvailable &&
+    (derivatives.fundingCategory === 'EXTREME_NEGATIVE' || derivatives.fundingCategory === 'EXTREME_POSITIVE')
+  ) {
     derivScore += 20;
   }
-  if (derivatives.positioning === 'EXTREME_SHORT' || derivatives.positioning === 'EXTREME_LONG') derivScore += 15;
+  if (positioningAvailable && (derivatives.positioning === 'EXTREME_SHORT' || derivatives.positioning === 'EXTREME_LONG')) {
+    derivScore += 15;
+  }
   derivScore = Math.min(100, derivScore);
 
   // اگر دادهٔ مشتقات از موتور شبیه‌سازی آمده باشد (نبود شبکه/API آتی)، نباید در
   // امتیاز اثر بگذارد؛ وگرنه روند OIِ ساختگی می‌تواند «اطمینان کاذب» بسازد.
   // در این حالت مؤلفه خنثی (۵۰) گزارش و وزنش میان سایر مؤلفه‌ها بازتوزیع می‌شود.
-  const derivativesLive = derivatives.isSimulated !== true;
   const derivativesComponent = derivativesLive ? derivScore : 50;
   const otherWeightTotal =
     w.liquidity + w.marketStructure + w.multiTimeframe + w.sessionLiquidity + w.volume + w.advancedLayer3;
@@ -338,10 +362,16 @@ export function generateSignal(params: {
     longConfluence += 15;
     longReasons.push(`چیرگی حجم خریداران (عدم تعادل تیکر +${volume.imbalance}%)`);
   }
-  if (derivatives.oiTrend === 'LONG_BUILDUP') {
+  // محرک‌های جهت‌دارِ مبتنی بر مشتقات فقط وقتی شمرده می‌شوند که آن فیلد واقعاً
+  // خوانده شده باشد. (پیش‌تر دادهٔ شبیه‌سازی‌شده یا فیلد نخوانده هم می‌توانست
+  // ۱۵ تا ۲۰ امتیاز هم‌افزایی بسازد و جهت معامله را از دادهٔ ساختگی بگیرد.)
+  if (oiAvailable && derivatives.oiTrend === 'LONG_BUILDUP') {
     longConfluence += 15;
     longReasons.push('افزایش قراردادهای باز همراه با قیمت (انباشت تهاجمی لانگ)');
-  } else if (derivatives.fundingCategory === 'NEGATIVE' || derivatives.fundingCategory === 'EXTREME_NEGATIVE') {
+  } else if (
+    fundingAvailable &&
+    (derivatives.fundingCategory === 'NEGATIVE' || derivatives.fundingCategory === 'EXTREME_NEGATIVE')
+  ) {
     longConfluence += 20;
     longReasons.push(
       `فاندینگ ریت منفی (${(derivatives.fundingRate * 100).toFixed(4)}%) پتانسیل شورت اسکوئیز ایجاد می‌کند`
@@ -377,10 +407,10 @@ export function generateSignal(params: {
     shortConfluence += 15;
     shortReasons.push(`چیرگی حجم فروشندگان (عدم تعادل تیکر ${volume.imbalance}%)`);
   }
-  if (derivatives.oiTrend === 'SHORT_BUILDUP') {
+  if (oiAvailable && derivatives.oiTrend === 'SHORT_BUILDUP') {
     shortConfluence += 15;
     shortReasons.push('افزایش قراردادهای باز در ریزش‌ها (انباشت تهاجمی شورت)');
-  } else if (derivatives.fundingCategory === 'EXTREME_POSITIVE') {
+  } else if (fundingAvailable && derivatives.fundingCategory === 'EXTREME_POSITIVE') {
     shortConfluence += 20;
     shortReasons.push('فاندینگ ریت مثبتِ افراطی، نشان‌دهندهٔ اشباع موقعیت‌های لانگ است');
   }
@@ -423,20 +453,25 @@ export function generateSignal(params: {
       : ['هیچ محرک جهت‌داری با هم‌افزایی کافی فعال نیست'];
 
   // ۳. هشدارهای ریسک
-  if (derivatives.fundingCategory === 'EXTREME_POSITIVE' && direction === 'LONG') {
+  if (fundingAvailable && derivatives.fundingCategory === 'EXTREME_POSITIVE' && direction === 'LONG') {
     warnings.push('فاندینگ ریت مثبتِ بالا: نگهداری لانگ هزینهٔ فاندینگ سنگینی دارد');
   }
-  if (derivatives.positioning === 'EXTREME_LONG' && direction === 'LONG') {
+  if (positioningAvailable && derivatives.positioning === 'EXTREME_LONG' && direction === 'LONG') {
     warnings.push('موقعیت‌های لانگ معامله‌گران خُرد به‌شدت اشباع شده است');
+  }
+  if (!derivativesLive || missingFields.size > 0) {
+    const missingCount = !derivativesLive ? 8 : missingFields.size;
+    warnings.push(
+      `${missingCount} مؤلفهٔ دادهٔ مشتقات در دسترس نبود${
+        !derivativesLive ? ' (کل فید آتی از موتور شبیه‌سازی آمده است)' : ''
+      }؛ امتیاز و جهت بدون آن‌ها محاسبه شده است.`
+    );
   }
   if (regime.regime === 'HIGH_VOLATILITY') {
     warnings.push('رژیم نوسان بالا: حد ضرر وسیع‌تری لازم است');
   }
   if (regime.regime === 'CONTRACTION' && direction !== 'NO_SIGNAL') {
     warnings.push('بازار در فشردگی است؛ احتمال شکست جعلی پیش از حرکت اصلی بالاست');
-  }
-  if (derivatives.isSimulated) {
-    warnings.push('دادهٔ مشتقات (OI/فاندینگ) در دسترس نبود و از موتور شبیه‌سازی قطعی آمده است');
   }
   if (isStale) {
     warnings.push('جریان داده دارای تأخیر است؛ پیش از اقدام، قیمت را راستی‌آزمایی کنید');
@@ -569,7 +604,8 @@ export function generateSignal(params: {
         tp2Percent: pct(ladder.tp2),
         tp3: ladder.tp3,
         tp3Percent: pct(ladder.tp3),
-        rrRatio: rrRatio > 0 ? rrRatio : 1.5,
+        // `0` یعنی «قابل محاسبه نیست»؛ پیش‌تر عدد ساختگی ۱٫۵ جایگزین می‌شد.
+        rrRatio: rrRatio > 0 ? rrRatio : 0,
         riskLevel: stopLossPercent < 1.5 ? 'LOW' : stopLossPercent < 3.0 ? 'MEDIUM' : 'HIGH',
         targetSources: ladder.sources,
         atrPercent: regime.atrPercent,

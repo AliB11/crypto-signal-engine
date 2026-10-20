@@ -7,60 +7,17 @@ import { isTimeframe } from './timeframes';
  * هدف: هیچ پارامتر خامی از کاربر نباید بدون پاک‌سازی به پروایدر داده یا موتور تحلیل برسد.
  */
 
-export interface RateLimitResult {
-  allowed: boolean;
-  remaining: number;
-  retryAfterSeconds: number;
-}
-
-interface Bucket {
-  tokens: number;
-  updatedAt: number;
-}
-
-const RATE_BUCKETS = new Map<string, Bucket>();
-const MAX_BUCKETS = 5000;
-
 /**
- * محدودساز نرخ درخواست به سبک سبد توکن، کاملاً در حافظه (بدون دیتابیس).
- * هر مسیر می‌تواند سقف خودش را تعیین کند؛ این لایه از هدررفتِ سهمیهٔ API بایننس
- * و سوءاستفاده از endpoints عمومی جلوگیری می‌کند.
+ * محدودسازی نرخ و کلید مشتری از ماژول مشترک `lib/rate-limit` خوانده می‌شود تا
+ * نکست و Cloudflare Worker دقیقاً یک منطق داشته باشند.
  */
-export function checkRateLimit(key: string, limit = 60, windowMs = 60_000): RateLimitResult {
-  const now = Date.now();
-
-  if (RATE_BUCKETS.size > MAX_BUCKETS) {
-    for (const [bucketKey, bucket] of RATE_BUCKETS) {
-      if (now - bucket.updatedAt > windowMs * 2) RATE_BUCKETS.delete(bucketKey);
-    }
-    if (RATE_BUCKETS.size > MAX_BUCKETS) RATE_BUCKETS.clear();
-  }
-
-  const bucket = RATE_BUCKETS.get(key) || { tokens: limit, updatedAt: now };
-  const elapsed = now - bucket.updatedAt;
-  const refill = (elapsed / windowMs) * limit;
-  bucket.tokens = Math.min(limit, bucket.tokens + refill);
-  bucket.updatedAt = now;
-
-  if (bucket.tokens < 1) {
-    RATE_BUCKETS.set(key, bucket);
-    return {
-      allowed: false,
-      remaining: 0,
-      retryAfterSeconds: Math.max(1, Math.ceil(((1 - bucket.tokens) * windowMs) / limit / 1000)),
-    };
-  }
-
-  bucket.tokens -= 1;
-  RATE_BUCKETS.set(key, bucket);
-  return { allowed: true, remaining: Math.floor(bucket.tokens), retryAfterSeconds: 0 };
-}
+export { checkRateLimit, clientKeyFromHeaders } from './rate-limit';
+export type { RateLimitResult } from './rate-limit';
+import { clientKeyFromHeaders, type RateLimitResult } from './rate-limit';
 
 /** کلید یکتای مشتری برای محدودسازی نرخ (IP پشت پروکسی) */
 export function clientKey(request: NextRequest): string {
-  const forwarded = request.headers.get('x-forwarded-for');
-  if (forwarded) return forwarded.split(',')[0].trim();
-  return request.headers.get('x-real-ip') || 'anonymous';
+  return clientKeyFromHeaders(request.headers);
 }
 
 export function rateLimitResponse(result: RateLimitResult): NextResponse {

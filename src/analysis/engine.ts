@@ -3,8 +3,9 @@ import {
   Kline,
   Timeframe,
   SignalWeights,
+  DataTrace,
 } from '../types/market';
-import { MarketDataProvider, computeDataQuality } from '../providers/MarketDataProvider';
+import { MarketDataProvider, createDataTrace, dataQualityFromTrace } from '../providers/MarketDataProvider';
 import { detectLiquidityLevels } from './liquidity';
 import { detectLiquiditySweeps } from './sweeps';
 import { analyzeMarketStructure } from './structure';
@@ -12,7 +13,7 @@ import { analyzeSessionLiquidity } from './sessions';
 import { analyzeVolume } from './volume';
 import { enrichDerivativesData } from './derivatives';
 import { detectMarketRegime } from './regime';
-import { analyzeMultiTimeframe } from './mtf';
+import { analyzeMultiTimeframe, MTF_TIMEFRAMES } from './mtf';
 import { evaluateLayer3Context } from './layer3';
 import { generateSignal } from './signal';
 import { isTimeframe, sessionTimeframeFor } from '../lib/timeframes';
@@ -26,9 +27,14 @@ export interface AnalysisOptions {
    * ساخته می‌شود؛ برای تحلیل جلسات معاملاتی همیشه از تایم‌فریم ۱۵ دقیقه استفاده می‌شود.
    */
   enableSessions?: boolean;
+  /**
+   * شمارندهٔ منبع دادهٔ اشتراکی (برای اسکن چندنمادی). اگر داده نشود، یک
+   * شمارندهٔ اختصاصی برای همین تحلیل ساخته می‌شود.
+   */
+  trace?: DataTrace;
 }
 
-const MTF_TIMEFRAMES: Timeframe[] = ['1d', '4h', '1h', '15m', '5m', '1m'];
+// فهرست تایم‌فریم‌های MTF از `analysis/mtf` وارد می‌شود تا دو تعریف واگرا نسازیم.
 
 /** پاک‌سازی نماد ورودی و جلوگیری از تزریق به URL پروایدر */
 export function sanitizeSymbol(symbol: string): string {
@@ -45,13 +51,15 @@ export async function runFullAnalysis(
   const tf: Timeframe = options.timeframe && isTimeframe(options.timeframe) ? options.timeframe : '15m';
   const safeSymbol = sanitizeSymbol(symbol);
   const limit = Math.max(60, Math.min(1000, Math.floor(options.candleLimit || 200)));
-  const statsBefore = provider.getStats?.();
+  // شمارندهٔ منبع دادهٔ *همین* تحلیل — نه اختلاف آمار سراسری پروایدر، که در
+  // محیط سرورلس بین درخواست‌های هم‌زمان آلوده می‌شود.
+  const trace = options.trace ?? createDataTrace();
 
   // ۱. واکشی موازی کندل‌های چندتایم‌فریم، تیکر، مشتقات و فراداده
   const [mtfKlines, ticker, rawDerivatives, metadata] = await Promise.all([
-    provider.getMultiTimeframeKlines(safeSymbol, MTF_TIMEFRAMES, limit),
-    provider.getTicker24h(safeSymbol),
-    provider.getDerivativesData(safeSymbol),
+    provider.getMultiTimeframeKlines(safeSymbol, MTF_TIMEFRAMES, limit, trace),
+    provider.getTicker24h(safeSymbol, trace),
+    provider.getDerivativesData(safeSymbol, trace),
     provider.getMetadata(safeSymbol),
   ]);
 
@@ -74,7 +82,7 @@ export async function runFullAnalysis(
   const sessionLiquidity = analyzeSessionLiquidity(sessionKlines);
 
   const volumeMetrics = analyzeVolume(primaryKlines);
-  const derivatives = enrichDerivativesData(rawDerivatives, primaryKlines);
+  const derivatives = enrichDerivativesData(rawDerivatives, primaryKlines, tf);
   const marketRegime = detectMarketRegime(primaryKlines);
   const mtf = analyzeMultiTimeframe(mtfKlines, tf);
 
@@ -109,7 +117,7 @@ export async function runFullAnalysis(
 
   const now = Date.now();
   const dataTimestamp = primaryKlines[primaryKlines.length - 1]?.timestamp || now;
-  const dataQuality = computeDataQuality(statsBefore, provider.getStats?.());
+  const dataQuality = dataQualityFromTrace(trace);
 
   return {
     symbol: safeSymbol,
@@ -129,7 +137,7 @@ export async function runFullAnalysis(
     candles: primaryKlines,
     dataTimestamp,
     analysisTimestamp: now,
-    dataSource: dataQuality.source === 'live' ? 'live' : 'simulated',
+    dataSource: dataQuality.source,
     dataQuality,
     durationMs: now - startedAt,
   };

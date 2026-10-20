@@ -21,7 +21,7 @@ export function calculateBacktestMetrics(
       losingTrades: 0,
       winRate: 0,
       lossRate: 0,
-      profitFactor: 0,
+      profitFactor: null,
       expectancy: 0,
       maxDrawdownPercent: 0,
       avgRR: 0,
@@ -85,12 +85,10 @@ export function calculateBacktestMetrics(
     });
   }
 
+  // `null` یعنی «تعریف‌نشده» (هیچ زیانی وجود نداشته). پیش‌تر عدد ساختگی ۹۹٫۹۹
+  // گزارش می‌شد که در جدول، یک عدد واقعیِ بسیار خوب به نظر می‌رسید.
   const profitFactor =
-    grossLoss > 0
-      ? parseFloat((grossProfit / grossLoss).toFixed(2))
-      : grossProfit > 0
-      ? 99.99
-      : 0;
+    grossLoss > 0 ? parseFloat((grossProfit / grossLoss).toFixed(2)) : grossProfit > 0 ? null : 0;
 
   const avgWinPnl = wins.length > 0 ? wins.reduce((s, t) => s + t.rrRealized, 0) / wins.length : 0;
   const avgLossPnl =

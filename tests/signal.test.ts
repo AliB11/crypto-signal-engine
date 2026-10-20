@@ -11,6 +11,7 @@ import {
   MarketRegime,
   Layer3Analysis,
 } from '../src/types/market';
+import { makeStructure, makeMtf } from './fixtures';
 
 export function testSignalEngine() {
   console.log('Testing Context-Aware Signal Engine & Trade Plan...');
@@ -57,14 +58,10 @@ export function testSignalEngine() {
     },
   ];
 
-  const structure: MarketStructureSummary = {
+  const structure: MarketStructureSummary = makeStructure({
     trend: 'BULLISH',
-    lastEvent: null,
-    events: [],
-    swingHighs: [],
+    candleCount: 60,
     swingLows: [{ index: 15, time: Date.now() - 900000, price: 94800, type: 'SWING_LOW', confirmedAt: 18, strength: 85 }],
-    fvgs: [],
-    orderBlocks: [],
     displacementDetected: true,
     recentMSS: {
       type: 'MSS',
@@ -76,8 +73,7 @@ export function testSignalEngine() {
       strength: 90,
       displacement: true,
     },
-    recentBOS: null,
-  };
+  });
 
   const sessions: SessionLiquiditySummary = {
     currentSession: 'London',
@@ -124,13 +120,12 @@ export function testSignalEngine() {
     timestamp: Date.now(),
   };
 
-  const mtf: MTFAnalysis = {
-    timeframes: {} as any,
+  const mtf: MTFAnalysis = makeMtf({
     alignmentScore: 88,
     htfTrend: 'BULLISH',
     ltfConfirmation: true,
     confluenceDescription: 'Full bullish confluence',
-  };
+  });
 
   const regime: MarketRegime = {
     regime: 'TRENDING_BULLISH',

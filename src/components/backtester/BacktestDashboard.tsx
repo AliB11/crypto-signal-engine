@@ -188,10 +188,19 @@ export const BacktestDashboard: React.FC<Props> = ({
               <span className="text-[10px] text-slate-500 font-semibold block mb-1">فاکتور سود</span>
               <span
                 className={`font-mono text-xl font-black block num ${
-                  overall.profitFactor >= 1.5 ? 'text-emerald-400' : 'text-amber-400'
+                  overall.profitFactor === null
+                    ? 'text-emerald-400'
+                    : overall.profitFactor >= 1.5
+                    ? 'text-emerald-400'
+                    : 'text-amber-400'
                 }`}
+                title={
+                  overall.profitFactor === null
+                    ? 'هیچ معاملهٔ زیان‌دهی وجود نداشت؛ فاکتور سود تعریف‌نشده است'
+                    : undefined
+                }
               >
-                {overall.profitFactor}
+                {overall.profitFactor === null ? '∞' : overall.profitFactor}
               </span>
               <span className="text-[10px] text-slate-400 mt-1 block">سود/زیان ناخالص</span>
             </div>
@@ -342,21 +351,21 @@ export const BacktestDashboard: React.FC<Props> = ({
                         <td className="py-2.5 font-sans font-bold text-slate-200">آموزش (۶۰٪)</td>
                         <td className="py-2.5 text-slate-300 num">{walkForward.training.totalTrades}</td>
                         <td className="py-2.5 text-emerald-400 num">{walkForward.training.winRate}%</td>
-                        <td className="py-2.5 text-cyan-400 num">{walkForward.training.profitFactor}</td>
+                        <td className="py-2.5 text-cyan-400 num">{walkForward.training.profitFactor === null ? '∞' : walkForward.training.profitFactor}</td>
                         <td className="py-2.5 text-rose-400 num">-{walkForward.training.maxDrawdownPercent}%</td>
                       </tr>
                       <tr>
                         <td className="py-2.5 font-sans font-bold text-slate-200">اعتبارسنجی (۲۰٪)</td>
                         <td className="py-2.5 text-slate-300 num">{walkForward.validation.totalTrades}</td>
                         <td className="py-2.5 text-emerald-400 num">{walkForward.validation.winRate}%</td>
-                        <td className="py-2.5 text-cyan-400 num">{walkForward.validation.profitFactor}</td>
+                        <td className="py-2.5 text-cyan-400 num">{walkForward.validation.profitFactor === null ? '∞' : walkForward.validation.profitFactor}</td>
                         <td className="py-2.5 text-rose-400 num">-{walkForward.validation.maxDrawdownPercent}%</td>
                       </tr>
                       <tr>
                         <td className="py-2.5 font-sans font-bold text-slate-200">خارج از نمونه (۲۰٪)</td>
                         <td className="py-2.5 text-slate-300 num">{walkForward.outOfSample.totalTrades}</td>
                         <td className="py-2.5 text-emerald-400 num">{walkForward.outOfSample.winRate}%</td>
-                        <td className="py-2.5 text-cyan-400 num">{walkForward.outOfSample.profitFactor}</td>
+                        <td className="py-2.5 text-cyan-400 num">{walkForward.outOfSample.profitFactor === null ? '∞' : walkForward.outOfSample.profitFactor}</td>
                         <td className="py-2.5 text-rose-400 num">-{walkForward.outOfSample.maxDrawdownPercent}%</td>
                       </tr>
                     </tbody>

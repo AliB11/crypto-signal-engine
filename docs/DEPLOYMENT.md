@@ -66,8 +66,11 @@ npx wrangler whoami
 ### Set Secrets (if needed in future)
 
 ```bash
-# For any future API keys that require server-side storage
+# Optional: raises the CoinGecko metadata rate limit (demo tier key)
 npx wrangler secret put COINGECKO_API_KEY
+
+# Optional: disable the simulated-data fallback so requests fail instead
+npx wrangler secret put DATA_SIMULATION_FALLBACK   # value: off
 ```
 
 ### Deploy
@@ -91,12 +94,22 @@ curl https://crypto-signal-scanner.<your-subdomain>.workers.dev/api/scanner?tier
 
 ### Cron Trigger
 
-The worker automatically runs a scanner cron job every minute (`* * * * *`) as configured in `wrangler.toml`:
+The worker runs a lightweight **upstream liveness probe** every 5 minutes
+(`*/5 * * * *`) as configured in `wrangler.toml`:
 
 ```toml
 [triggers]
-crons = ["* * * * *"]
+crons = ["*/5 * * * *"]
 ```
+
+It performs a single ticker request and logs upstream reachability, circuit-breaker
+state and the last error.
+
+> **Why not every minute?** The previous `* * * * *` trigger ran a *full* 10-symbol
+> multi-timeframe scan every minute and discarded the result, purely to warm a cache
+> whose TTL is 8 seconds — hundreds of thousands of upstream requests per day that
+> warmed nothing. Circuit breakers also self-heal via their `openUntil` timestamp and
+> are cleared by the first successful user request, so they never needed this scan.
 
 Monitor cron execution in the Cloudflare dashboard under **Workers & Pages → your worker → Triggers → Cron Triggers**.
 
@@ -134,10 +147,15 @@ on:
 
 ## Environment Variables
 
-| Variable             | Required | Default | Description                          |
-| :------------------- | :------- | :------ | :----------------------------------- |
-| `NODE_ENV`           | No       | `development` | `development` or `production`  |
-| `COINGECKO_API_KEY`  | No       | (none)  | CoinGecko Pro API key (optional)     |
+| Variable                  | Required | Default | Description                                                                 |
+| :------------------------ | :------- | :------ | :-------------------------------------------------------------------------- |
+| `DATA_SIMULATION_FALLBACK`| No       | enabled | Set to `off` to disable the deterministic-simulation fallback entirely. When off, a request fails with an error instead of returning simulated data. |
+| `COINGECKO_API_KEY`       | No       | (none)  | Optional CoinGecko **Demo** key, sent as `x-cg-demo-api-key`. Raises the metadata rate limit; without it, name/rank/market-cap may be `null`. |
+
+Only these two variables are actually read by the code. `NODE_ENV` and the legacy
+`DATABASE_URL` were previously documented here even though nothing in the codebase
+read them — documenting a knob that does not exist is its own kind of fabricated
+data, so they were removed.
 
 **Note:** Binance public APIs do not require API keys. The scanner works out-of-the-box with zero configuration.
 

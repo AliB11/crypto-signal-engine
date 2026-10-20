@@ -22,8 +22,12 @@ export interface LiquidityDraw {
   upWeight: number;
   downWeight: number;
   direction: 'UP' | 'DOWN' | 'BALANCED';
-  /** سهم کشش صعودی از کل (۰ تا ۱۰۰) */
-  upPercent: number;
+  /**
+   * سهم کشش صعودی از کل (۰ تا ۱۰۰).
+   * `null` یعنی هیچ سطح دست‌نخورده‌ای وجود نداشت؛ پیش‌تر عدد ۵۰ برگردانده می‌شد
+   * که «تقسیم دقیقاً متوازن نقدینگی» به نظر می‌رسید در حالی که داده‌ای نبود.
+   */
+  upPercent: number | null;
   /** تعداد سطوح دست‌نخوردهٔ استفاده‌شده */
   unsweptCount: number;
 }
@@ -98,14 +102,14 @@ export function computeLiquidityDraw(levels: LiquidityLevel[], currentPrice: num
   }
 
   const total = upWeight + downWeight;
-  const upPercent = total > 0 ? Math.round((upWeight / total) * 100) : 50;
+  const upPercent = total > 0 ? Math.round((upWeight / total) * 100) : null;
   const rounded = {
     upWeight: Math.round(upWeight * 10) / 10,
     downWeight: Math.round(downWeight * 10) / 10,
   };
 
   let direction: LiquidityDraw['direction'] = 'BALANCED';
-  if (total > 0) {
+  if (upPercent !== null) {
     if (upPercent >= 60) direction = 'UP';
     else if (upPercent <= 40) direction = 'DOWN';
   }

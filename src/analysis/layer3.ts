@@ -53,6 +53,9 @@ export function evaluateLayer3Context(params: {
   if (sessions.sessions.asian.lowSwept) sessionSweeps.push('Asian Low Swept');
   if (sessions.sessions.london.highSwept) sessionSweeps.push('London High Swept');
   if (sessions.sessions.london.lowSwept) sessionSweeps.push('London Low Swept');
+  // سطوح جلسهٔ نیویورک هم تولید می‌شوند، اما پیش‌تر سوئیپ‌هایش هرگز شمرده نمی‌شد
+  if (sessions.sessions.newYork.highSwept) sessionSweeps.push('New York High Swept');
+  if (sessions.sessions.newYork.lowSwept) sessionSweeps.push('New York Low Swept');
 
   let displacementScore = 50;
   if (structure.displacementDetected) displacementScore += 30;
@@ -78,16 +81,28 @@ export function evaluateLayer3Context(params: {
 
   const volumeConfluence = volume.state === 'EXPANSION' || volume.isSpike || Math.abs(volume.imbalance) > 10;
 
+  /**
+   * هم‌افزایی مشتقات فقط وقتی معنا دارد که آن فیلد *واقعاً* خوانده شده باشد.
+   * دادهٔ شبیه‌سازی‌شده یا فیلد غایب (مثلاً فاندینگِ نخوانده‌شده) نباید به‌عنوان
+   * «جریان هم‌راستا» امتیاز بگیرد.
+   */
+  const missing = new Set(derivatives.missingFields ?? []);
+  const derivativesLive = derivatives.isSimulated !== true;
+  const oiUsable = derivativesLive && !missing.has('oiChange1hPercent');
+  const fundingUsable = derivativesLive && !missing.has('fundingRate');
+
   const derivativesConfluence =
-    derivatives.oiTrend === 'LONG_BUILDUP' ||
-    derivatives.oiTrend === 'SHORT_BUILDUP' ||
-    derivatives.fundingCategory === 'EXTREME_NEGATIVE' ||
-    derivatives.fundingCategory === 'EXTREME_POSITIVE';
+    (oiUsable && (derivatives.oiTrend === 'LONG_BUILDUP' || derivatives.oiTrend === 'SHORT_BUILDUP')) ||
+    (fundingUsable &&
+      (derivatives.fundingCategory === 'EXTREME_NEGATIVE' ||
+        derivatives.fundingCategory === 'EXTREME_POSITIVE'));
 
   let regimeBonus = 0;
   if (regime.regime === 'TRENDING_BULLISH' || regime.regime === 'TRENDING_BEARISH') {
     regimeBonus = 15;
-  } else if (regime.regime === 'EXPANSION') {
+  } else if (regime.regime === 'HIGH_VOLATILITY' || regime.regime === 'EXPANSION') {
+    // `EXPANSION` در نوع MarketRegimeType تعریف شده اما detectMarketRegime آن را
+    // تولید نمی‌کند؛ `HIGH_VOLATILITY` وضعیت واقعیِ معادل آن است.
     regimeBonus = 10;
   } else if (regime.regime === 'RANGING' && activeSweeps.length > 0) {
     regimeBonus = 12; // Range sweeps offer high-probability mean-reversions
@@ -110,8 +125,10 @@ export function evaluateLayer3Context(params: {
       swingLowsCount,
       equalHighs,
       equalLows,
-      pdhDistancePercent: pdh?.distancePercent || 0,
-      pdlDistancePercent: pdl?.distancePercent || 0,
+      // `null` یعنی «سطح روز قبل در دادهٔ موجود تولید نشده» — نه فاصلهٔ صفر درصد.
+      // (پیش‌تر `|| 0` نبودِ سطح را به «قیمت دقیقاً روی سقف روز قبل» ترجمه می‌کرد.)
+      pdhDistancePercent: pdh?.distancePercent ?? null,
+      pdlDistancePercent: pdl?.distancePercent ?? null,
       score: layer1Score,
     },
     layer2StructuralLiquidity: {

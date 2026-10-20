@@ -8,13 +8,20 @@ import {
 } from '../types/market';
 import { findConfirmedPivots } from './pivots';
 
+/** حداقل کندل لازم برای تشخیص ساختار (پیوت‌ها به ۳ کندل چپ و ۲ کندل راست نیاز دارند) */
+export const MIN_CANDLES_FOR_STRUCTURE = 15;
+
 export function analyzeMarketStructure(
   klines: Kline[],
   timeframe: Timeframe = '15m'
 ): MarketStructureSummary {
-  if (!klines || klines.length < 15) {
+  if (!klines || klines.length < MIN_CANDLES_FOR_STRUCTURE) {
+    // دادهٔ ناکافی. `trend` در این حالت یک *نتیجه* نیست، پس `available: false`
+    // اعلام می‌شود تا مصرف‌کننده آن را «بازار رنج» تفسیر نکند.
     return {
       trend: 'RANGING',
+      available: false,
+      candleCount: klines?.length ?? 0,
       lastEvent: null,
       events: [],
       swingHighs: [],
@@ -30,16 +37,24 @@ export function analyzeMarketStructure(
   // 1. Confirmed Pivots
   const { swingHighs, swingLows } = findConfirmedPivots(klines, 3, 2);
 
-  // 2. Compute Average Candle Body and Volume for Displacement Detection
+  // ۲. میانگین بدنه و حجم برای تشخیص دیسپلیسمنت.
+  // آخرین کندلِ آرایه در بازار زنده *هنوز در حال تشکیل* است؛ اگر آن را داخل
+  // میانگین ببریم، یک کندل بزرگِ جاری هم مخرج را بزرگ می‌کند و هم صورت را، و
+  // دیسپلیسمنتِ واقعی خودِ همان کندل هرگز تشخیص داده نمی‌شود (سنجش خودارجاع).
+  // پس میانگین فقط از کندل‌های بسته‌شده ساخته می‌شود.
+  const closedCandles = klines.slice(0, klines.length - 1);
+  const count = Math.min(30, closedCandles.length);
   let sumBody = 0;
   let sumVol = 0;
-  const count = Math.min(30, klines.length);
-  for (let i = klines.length - count; i < klines.length; i++) {
-    sumBody += Math.abs(klines[i].close - klines[i].open);
-    sumVol += klines[i].volume;
+  for (let i = closedCandles.length - count; i < closedCandles.length; i++) {
+    sumBody += Math.abs(closedCandles[i].close - closedCandles[i].open);
+    sumVol += closedCandles[i].volume;
   }
-  const avgBody = sumBody / count;
-  const avgVol = sumVol / count;
+  const avgBody = count > 0 ? sumBody / count : 0;
+  const avgVol = count > 0 ? sumVol / count : 0;
+  // با میانگین صفر (همهٔ کندل‌ها بدون حجم) هیچ کندلی دیسپلیسمنت نیست
+  const isDisplacementCandle = (body: number, volume: number) =>
+    avgBody > 0 && avgVol > 0 && body >= avgBody * 1.6 && volume >= avgVol * 1.25;
 
   const events: StructureEvent[] = [];
   let currentTrend: 'BULLISH' | 'BEARISH' | 'RANGING' = 'RANGING';
@@ -117,7 +132,7 @@ export function analyzeMarketStructure(
   for (let i = 10; i < klines.length; i++) {
     const candle = klines[i];
     const body = Math.abs(candle.close - candle.open);
-    const isDisplacement = body >= avgBody * 1.6 && candle.volume >= avgVol * 1.25;
+    const isDisplacement = isDisplacementCandle(body, candle.volume);
 
     // Available confirmed swing points before index i
     const confirmedHighs = swingHighs.filter((sh) => sh.confirmedAt <= i && sh.index < i);
@@ -294,6 +309,11 @@ export function analyzeMarketStructure(
     }
   }
 
+  // رویدادها در دو حلقهٔ جدا ساخته می‌شوند (پیوت‌ها، سپس شکست‌ها)، پس آرایهٔ خام
+  // زمانی‌مرتب نیست و `slice(-5)` هرگز رویدادهای HH/HL را نمی‌دید. مرتب‌سازی
+  // بر اساس ایندکس کندل، «آخرین رویداد» و «رویدادهای اخیر» را واقعی می‌کند.
+  events.sort((a, b) => a.candleIndex - b.candleIndex || a.timestamp - b.timestamp);
+
   // Determine current trend based on latest structure events
   const recentEvents = events.slice(-5);
   const bullishCount = recentEvents.filter((e) => e.direction === 'BULLISH').length;
@@ -311,11 +331,10 @@ export function analyzeMarketStructure(
   const recentMSS = recentEventsWindow.filter((e) => e.type === 'MSS').pop() || null;
   const recentBOS = recentEventsWindow.filter((e) => e.type === 'BOS').pop() || null;
 
-  // Recent displacement check (last 5 candles)
-  const recentDisplacement = klines.slice(-5).some((k) => {
-    const b = Math.abs(k.close - k.open);
-    return b >= avgBody * 1.6 && k.volume >= avgVol * 1.25;
-  });
+  // دیسپلیسمنت اخیر: ۵ کندل آخر، با همان تعریف مبتنی بر میانگینِ کندل‌های بسته
+  const recentDisplacement = klines
+    .slice(-5)
+    .some((k) => isDisplacementCandle(Math.abs(k.close - k.open), k.volume));
 
   // فقط FVG های «فعال» (پرشدنشده) نگه داشته می‌شوند؛ پیش‌تر برش سادهٔ `.slice(-8)`
   // می‌توانست گپ‌های پرشده را حفظ کند و گپ فعال قدیمی‌تر را دور بریزد — و به همین دلیل
@@ -340,6 +359,8 @@ export function analyzeMarketStructure(
 
   return {
     trend,
+    available: true,
+    candleCount: klines.length,
     lastEvent: events[events.length - 1] || null,
     events,
     swingHighs,

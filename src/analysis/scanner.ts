@@ -1,5 +1,5 @@
-import { Signal, SignalWeights, Timeframe, DataQualityInfo } from '../types/market';
-import { MarketDataProvider, computeDataQuality } from '../providers/MarketDataProvider';
+import { Signal, SignalWeights, Timeframe, DataQualityInfo, DataSource } from '../types/market';
+import { MarketDataProvider, createDataTrace, dataQualityFromTrace } from '../providers/MarketDataProvider';
 import { runFullAnalysis } from './engine';
 
 export interface ScannerSymbolError {
@@ -13,9 +13,14 @@ export interface ScannerResult {
   totalScanned: number;
   timeframe: Timeframe;
   signals: Signal[];
-  dataSource: 'live' | 'simulated';
+  dataSource: DataSource;
   /** جزئیات کیفیت دادهٔ این اسکن (نسبت فراخوانی‌های زنده) */
   dataQuality?: DataQualityInfo;
+  /**
+   * منبع فهرست نمادها: `live-volume` یعنی از حجم واقعی ۲۴ساعتهٔ بایننس رتبه‌بندی
+   * شده، `static-watchlist` یعنی دیده‌بان ایستای پیکربندی (بدون رتبه‌بندی زنده).
+   */
+  symbolsSource?: 'live-volume' | 'static-watchlist';
   /** نمادهایی که تحلیلشان با خطا مواجه شد — پیش‌تر خطاها بی‌صدا حذف می‌شدند */
   errors: ScannerSymbolError[];
   summary: {
@@ -36,7 +41,9 @@ export async function runScanner(
   weights?: Partial<SignalWeights>
 ): Promise<ScannerResult> {
   const startedAt = Date.now();
-  const statsBefore = provider.getStats?.();
+  // یک شمارندهٔ مشترک برای «کل این اسکن»؛ همهٔ نمادها در همین یک شیء جمع می‌شوند
+  // تا کیفیت دادهٔ اسکن از درخواست‌های هم‌زمانِ دیگر مستقل بماند.
+  const trace = createDataTrace();
   const results: Signal[] = [];
   const errors: ScannerSymbolError[] = [];
 
@@ -48,7 +55,12 @@ export async function runScanner(
     const chunkResults = await Promise.all(
       chunk.map(async (symbol) => {
         try {
-          const full = await runFullAnalysis(provider, symbol, { timeframe, candleLimit: 120, weights });
+          const full = await runFullAnalysis(provider, symbol, {
+            timeframe,
+            candleLimit: 120,
+            weights,
+            trace,
+          });
           return { signal: full.signal as Signal | null, error: null as string | null };
         } catch (err: unknown) {
           return { signal: null, error: err instanceof Error ? err.message : String(err) };
@@ -72,9 +84,12 @@ export async function runScanner(
     (s) => s.classification === 'STRONG' || s.classification === 'VERY_STRONG'
   ).length;
 
-  // کیفیت دادهٔ «همین اسکن» از اختلاف آمار پروایدر در ابتدا و انتهای کار محاسبه می‌شود.
-  // (نسخهٔ قبلی پرچم سراسری را *پیش از* اجرای اسکن می‌خواند و همیشه «live» برمی‌گرداند.)
-  const dataQuality = computeDataQuality(statsBefore, provider.getStats?.());
+  // کیفیت دادهٔ «همین اسکن» از شمارندهٔ اختصاصی همان اسکن خوانده می‌شود.
+  // (نسخهٔ نخست پرچم سراسری را *پیش از* اجرای اسکن می‌خواند و همیشه «live» بود؛
+  //  نسخهٔ دوم از اختلاف آمار سراسری پروایدر استفاده می‌کرد که بین درخواست‌های
+  //  هم‌زمان آلوده می‌شد.)
+  const dataQuality = dataQualityFromTrace(trace);
+  const symbolsSource = provider.getSymbolsSource?.();
 
   return {
     updatedAt: new Date().toISOString(),
@@ -82,8 +97,9 @@ export async function runScanner(
     totalScanned: symbols.length,
     timeframe,
     signals: results,
-    dataSource: dataQuality.source === 'live' ? 'live' : 'simulated',
+    dataSource: dataQuality.source,
     dataQuality,
+    ...(symbolsSource ? { symbolsSource } : {}),
     errors,
     summary: {
       longs,

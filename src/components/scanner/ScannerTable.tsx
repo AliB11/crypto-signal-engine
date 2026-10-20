@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { formatPrice, toFaDigits } from '@/lib/format';
 import { faLabel, FA_CLASSIFICATION, FA_REGIME } from '@/lib/i18n';
+import type { ScannerTier } from '@/config/engine';
 import { formatLifecycleAge, lifecycleStateLabel, SignalLifecycleMap } from '@/lib/signal-lifecycle';
 import { MarketPulsePanel } from './MarketPulsePanel';
 
@@ -26,8 +27,8 @@ interface Props {
   selectedSymbol: string;
   onSelectSymbol: (symbol: string) => void;
   isLoading: boolean;
-  tier: 'top10' | 'top25' | 'top50' | 'custom';
-  onChangeTier: (tier: 'top10' | 'top25' | 'top50' | 'custom') => void;
+  tier: ScannerTier;
+  onChangeTier: (tier: ScannerTier) => void;
   favorites: string[];
   onToggleFavorite: (symbol: string) => void;
   currentTimeframe: Timeframe;

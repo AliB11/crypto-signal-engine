@@ -14,6 +14,7 @@ import {
   FlaskConical,
 } from 'lucide-react';
 import { toFaDigits } from '@/lib/format';
+import type { DataSource } from '@/types/market';
 
 interface Props {
   activeTab: 'scanner' | 'analyzer' | 'backtest' | 'history';
@@ -25,7 +26,7 @@ interface Props {
   onOpenSettings: () => void;
   soundEnabled: boolean;
   onToggleSound: () => void;
-  dataSource: 'live' | 'simulated';
+  dataSource: DataSource;
 }
 
 export const Header: React.FC<Props> = ({
@@ -41,6 +42,7 @@ export const Header: React.FC<Props> = ({
   dataSource,
 }) => {
   const isLive = dataSource === 'live';
+  const isMixed = dataSource === 'mixed';
 
   return (
     <header className="sticky top-0 z-40 bg-slate-950/90 border-b border-slate-800 backdrop-blur-md px-4 lg:px-8 py-3">
@@ -69,6 +71,14 @@ export const Header: React.FC<Props> = ({
                 />
                 {isLive ? (
                   <span className="text-emerald-400 font-semibold">فید زنده بازار</span>
+                ) : isMixed ? (
+                  <span
+                    className="text-amber-400 font-semibold flex items-center gap-1"
+                    title="بخشی از فراخوانی‌ها از بایننس خوانده شد و بخشی از موتور شبیه‌سازی آمد"
+                  >
+                    <FlaskConical className="w-3 h-3" />
+                    دادهٔ ترکیبی (بخشی شبیه‌سازی‌شده)
+                  </span>
                 ) : (
                   <span className="text-amber-400 font-semibold flex items-center gap-1">
                     <FlaskConical className="w-3 h-3" />

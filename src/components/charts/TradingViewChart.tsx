@@ -11,7 +11,7 @@ import {
   Time,
   LineStyle,
 } from 'lightweight-charts';
-import { Kline, LiquidityLevel, LiquiditySweep, MarketStructureSummary, TradePlan, Timeframe } from '@/types/market';
+import { Kline, LiquidityLevel, LiquiditySweep, MarketStructureSummary, TradePlan, Timeframe, DataSource } from '@/types/market';
 import { faLabel, FA_LEVEL_TYPE, FA_TREND } from '@/lib/i18n';
 import { formatPrice } from '@/lib/format';
 
@@ -24,7 +24,7 @@ interface Props {
   timeframe: Timeframe;
   symbol: string;
   /** منبع دادهٔ همین نمودار — برای جلوگیری از نمایش نادرست «فید زنده» */
-  dataSource?: 'live' | 'simulated';
+  dataSource?: DataSource;
 }
 
 export const TradingViewChart: React.FC<Props> = ({
@@ -268,7 +268,11 @@ export const TradingViewChart: React.FC<Props> = ({
             </span>
             <span>•</span>
             <span className={dataSource === 'live' ? 'text-emerald-400' : 'text-amber-400'}>
-              {dataSource === 'live' ? 'فید زندهٔ بایننس' : 'فید شبیه‌سازی‌شده (بدون دسترسی به بایننس)'}
+              {dataSource === 'live'
+                ? 'فید زندهٔ بایننس'
+                : dataSource === 'mixed'
+                ? 'فید ترکیبی (بخشی از داده شبیه‌سازی‌شده است)'
+                : 'فید شبیه‌سازی‌شده (بدون دسترسی به بایننس)'}
             </span>
           </div>
         </div>

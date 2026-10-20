@@ -7,7 +7,9 @@ import {
   Timeframe,
   SignalWeights,
   DataQualityInfo,
+  DataSource,
 } from '@/types/market';
+import { ScannerTier, SCANNER_TIERS } from '@/config/engine';
 import { DEFAULT_WEIGHTS } from '@/analysis/signal';
 import { Header } from '@/components/layout/Header';
 import { ScannerTable } from '@/components/scanner/ScannerTable';
@@ -26,6 +28,11 @@ const ALERT_COOLDOWN_MS = 15 * 60_000;
 const HISTORY_DEDUPE_MS = 30 * 60_000;
 /** کلید حافظهٔ محلی ردیاب چرخهٔ عمر سیگنال‌ها (تازه/پایدار/برگشتی) */
 const LIFECYCLE_STORAGE_KEY = 'crypto_signal_lifecycle_v1';
+const TIER_STORAGE_KEY = 'crypto_scanner_tier';
+const SOUND_STORAGE_KEY = 'crypto_scanner_sound';
+
+const isScannerTier = (value: unknown): value is ScannerTier =>
+  typeof value === 'string' && (SCANNER_TIERS as string[]).includes(value);
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'scanner' | 'analyzer' | 'backtest' | 'history'>('scanner');
@@ -33,7 +40,7 @@ export default function Home() {
   const [selectedSymbol, setSelectedSymbol] = useState<string>('BTCUSDT');
   const [coinAnalysis, setCoinAnalysis] = useState<FullAnalysisResult | null>(null);
   const [currentTimeframe, setCurrentTimeframe] = useState<Timeframe>('15m');
-  const [tier, setTier] = useState<'top10' | 'top25' | 'top50' | 'custom'>('top10');
+  const [tier, setTier] = useState<ScannerTier>('top10');
 
   const [isLoadingSignals, setIsLoadingSignals] = useState(true);
   const [isLoadingCoin, setIsLoadingCoin] = useState(false);
@@ -41,10 +48,13 @@ export default function Home() {
   const [secondsUntilNextScan, setSecondsUntilNextScan] = useState<number>(SCAN_INTERVAL_SECONDS);
   const [favorites, setFavorites] = useState<string[]>(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
   const [weights, setWeights] = useState<SignalWeights>(DEFAULT_WEIGHTS);
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  // صدای هشدار به‌صورت پیش‌فرض *خاموش* است: یک هشدار شنیداری باید انتخاب شود، نه
+  // اینکه تحمیل شود. پیش‌تر پیش‌فرض روشن بود و چون در حافظه محلی هم ذخیره
+  // نمی‌شد، با هر بارگذاری صفحه دوباره روشن می‌شد.
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [dataSource, setDataSource] = useState<'live' | 'simulated'>('live');
+  const [dataSource, setDataSource] = useState<DataSource>('live');
   const [dataQuality, setDataQuality] = useState<DataQualityInfo | null>(null);
   const [scanErrors, setScanErrors] = useState<{ symbol: string; message: string }[]>([]);
   const [toast, setToast] = useState<string | null>(null);
@@ -78,13 +88,36 @@ export default function Home() {
       const storedWeights = localStorage.getItem('crypto_scanner_weights');
       if (storedWeights) {
         const parsed = JSON.parse(storedWeights) as Partial<SignalWeights>;
-         
+
         setWeights({ ...DEFAULT_WEIGHTS, ...parsed });
       }
+
+      const storedTier = localStorage.getItem(TIER_STORAGE_KEY);
+      if (isScannerTier(storedTier)) setTier(storedTier);
+
+      // فقط مقدار صریح «روشن» صدا را فعال می‌کند؛ نبودِ کلید یعنی خاموش
+      if (localStorage.getItem(SOUND_STORAGE_KEY) === 'on') setSoundEnabled(true);
     } catch {
       // خطاهای دسترسی به حافظه محلی نادیده گرفته می‌شوند
     }
   }, []);
+
+  // ماندگارسازی انتخاب‌های کاربر (لایهٔ اسکن و صدای هشدار)
+  useEffect(() => {
+    try {
+      localStorage.setItem(TIER_STORAGE_KEY, tier);
+    } catch {
+      // حافظه محلی در دسترس نیست — انتخاب فقط تا پایان نشست می‌ماند
+    }
+  }, [tier]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SOUND_STORAGE_KEY, soundEnabled ? 'on' : 'off');
+    } catch {
+      // حافظه محلی در دسترس نیست
+    }
+  }, [soundEnabled]);
 
   // نمایش توست با پنهان‌سازی خودکار
   const showToast = useCallback((message: string) => {
@@ -127,7 +160,9 @@ export default function Home() {
 
       // وضعیت منبع داده از خودِ همین پاسخ خوانده می‌شود (نه یک پرچم سراسری)،
       // بنابراین با بازگشت اتصال، نشانگر دوباره «زنده» می‌شود.
-      setDataSource(data.dataSource === 'simulated' ? 'simulated' : 'live');
+      // سه وضعیت، نه دو تا: فروکاستن `mixed` به `live` یعنی «همه‌چیز زنده است»
+      // در حالی که بخشی از داده شبیه‌سازی شده است.
+      setDataSource(data.dataSource === 'simulated' || data.dataSource === 'mixed' ? data.dataSource : 'live');
       setDataQuality(data.dataQuality ?? null);
       setScanErrors(Array.isArray(data.errors) ? data.errors : []);
 
@@ -312,12 +347,14 @@ export default function Home() {
       {/* محتوای اصلی صفحه */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6">
         {/* هشدار کیفیت داده — شفافیت دربارهٔ منبع داده و خطاهای اسکن */}
-        {activeTab !== 'analyzer' && dataSource === 'simulated' && (
+        {activeTab !== 'analyzer' && dataSource !== 'live' && (
           <div className="mb-4 p-3 bg-amber-950/40 border border-amber-800/60 rounded-xl text-xs text-amber-300 flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <span>
               {dataQuality?.message ||
-                'دسترسی به API عمومی بایننس برقرار نیست؛ داده‌های نمایش‌داده‌شده از موتور شبیه‌سازی قطعی می‌آیند و برای معاملهٔ واقعی مناسب نیستند.'}
+                (dataSource === 'mixed'
+                  ? 'بخشی از داده‌های این اسکن از موتور شبیه‌سازی آمده است؛ نتیجه را با احتیاط تفسیر کنید.'
+                  : 'دسترسی به API عمومی بایننس برقرار نیست؛ داده‌های نمایش‌داده‌شده از موتور شبیه‌سازی قطعی می‌آیند و برای معاملهٔ واقعی مناسب نیستند.')}
               {dataQuality ? ` (نسبت دادهٔ زنده: ${Math.round(dataQuality.liveRatio * 100)}٪)` : ''}
             </span>
           </div>

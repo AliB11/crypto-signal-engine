@@ -26,7 +26,9 @@ export const MarketPulsePanel: React.FC<Props> = ({ signals }) => {
   const pulse = useMemo(() => computeMarketPulse(signals), [signals]);
 
   const totalWeight = pulse.longWeight + pulse.shortWeight;
-  const longShare = totalWeight > 0 ? (pulse.longWeight / totalWeight) * 100 : 50;
+  // وقتی هیچ ستاپ جهت‌داری در اسکن نیست، سهم ۵۰/۵۰ «نتیجهٔ اندازه‌گیری» نیست؛
+  // یک عدد ساختگی بود. در آن حالت نوار خالی و برچسب «—» نمایش داده می‌شود.
+  const longShare = totalWeight > 0 ? (pulse.longWeight / totalWeight) * 100 : null;
 
   const biasTone =
     pulse.bias === 'BULLISH'
@@ -54,19 +56,25 @@ export const MarketPulsePanel: React.FC<Props> = ({ signals }) => {
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between text-[10px] font-semibold">
           <span className="text-emerald-400">
-            خرید ({toFaDigits(Math.round(longShare))}٪)
+            خرید ({longShare === null ? '—' : `${toFaDigits(Math.round(longShare))}٪`})
           </span>
-          <span className="text-slate-500">سهم وزنی بر پایهٔ امتیاز ستاپ‌ها</span>
-          <span className="text-rose-400">فروش ({toFaDigits(Math.round(100 - longShare))}٪)</span>
+          <span className="text-slate-500">
+            {longShare === null
+              ? 'ستاپ جهت‌داری برای سنجش سوگیری وجود ندارد'
+              : 'سهم وزنی بر پایهٔ امتیاز ستاپ‌ها'}
+          </span>
+          <span className="text-rose-400">
+            فروش ({longShare === null ? '—' : `${toFaDigits(Math.round(100 - longShare))}٪`})
+          </span>
         </div>
         <div className="w-full h-2.5 rounded-full overflow-hidden bg-slate-950 border border-slate-800 flex" dir="ltr">
           <div
             className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 transition-all duration-700"
-            style={{ width: `${longShare}%` }}
+            style={{ width: `${longShare ?? 0}%` }}
           />
           <div
             className="h-full bg-gradient-to-r from-rose-500 to-rose-600 transition-all duration-700"
-            style={{ width: `${100 - longShare}%` }}
+            style={{ width: `${longShare === null ? 0 : 100 - longShare}%` }}
           />
         </div>
       </div>

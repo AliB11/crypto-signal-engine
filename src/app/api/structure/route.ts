@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dataProvider } from '@/providers';
+import { createDataTrace, dataQualityFromTrace } from '@/providers/MarketDataProvider';
 import { analyzeMarketStructure } from '@/analysis/structure';
 import {
   checkRateLimit,
@@ -21,14 +22,18 @@ export async function GET(request: NextRequest) {
     const symbol = parseSymbolParam(searchParams.get('symbol'), 'BTCUSDT');
     const tf = parseTimeframeParam(searchParams.get('tf'), '15m');
 
-    const klines = await dataProvider.getKlines(symbol, tf, 200);
+    const trace = createDataTrace();
+    const klines = await dataProvider.getKlines(symbol, tf, 200, trace);
     const structure = analyzeMarketStructure(klines, tf);
+    const dataQuality = dataQualityFromTrace(trace);
 
     return NextResponse.json({
       symbol,
       timeframe: tf,
       currentPrice: klines[klines.length - 1]?.close || 0,
       structure,
+      dataSource: dataQuality.source,
+      dataQuality,
       timestamp: Date.now(),
     }, { headers: { 'Cache-Control': 'public, s-maxage=10, stale-while-revalidate=20' } });
   } catch (err: unknown) {
